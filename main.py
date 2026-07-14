@@ -1,19 +1,43 @@
 import asyncio
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
+import tarfile
+import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 import decky
 
+# Steam Deck–friendly install location (survives OS updates with /home)
+OPT_ROOT = Path("/opt/netbird")
+OPT_BIN_DIR = OPT_ROOT / "bin"
+OPT_BIN = OPT_BIN_DIR / "netbird"
+OPT_TMP = OPT_ROOT / "tmp"
+PROFILE_D = Path("/etc/profile.d/netbird.sh")
+ATOMIC_UPDATE = Path("/etc/atomic-update.conf.d/netbird.conf")
+SYSTEMD_UNIT = Path("/etc/systemd/system/netbird.service")
+
+GITHUB_LATEST = "https://api.github.com/repos/netbirdio/netbird/releases/latest"
+GITHUB_RELEASE_ASSET = (
+    "https://github.com/netbirdio/netbird/releases/download/"
+    "v{version}/netbird_{version}_linux_{arch}.tar.gz"
+)
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+USER_AGENT = "netbird-steamdeck-decky-plugin/1.1"
+
 BINARY_CANDIDATES = [
+    str(OPT_BIN),
     "/usr/bin/netbird",
     "/usr/local/bin/netbird",
     "/opt/netbird/netbird",
     "/home/deck/.local/bin/netbird",
+    "/home/linuxbrew/.linuxbrew/bin/netbird",
 ]
 
 AUTH_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
@@ -57,6 +81,9 @@ def _save_settings(data: dict[str, Any]) -> None:
 
 
 def _resolve_binary() -> Optional[str]:
+    # Prefer the Steam Deck managed install first
+    if OPT_BIN.is_file() and os.access(OPT_BIN, os.X_OK):
+        return str(OPT_BIN)
     found = shutil.which("netbird")
     if found:
         return found
@@ -64,6 +91,126 @@ def _resolve_binary() -> Optional[str]:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def _linux_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "amd64"
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    return "amd64"
+
+
+def _http_json(url: str, timeout: float = 30.0) -> Any:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_download(url: str, dest: Path, timeout: float = 300.0) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp, open(
+        dest, "wb"
+    ) as out:
+        shutil.copyfileobj(resp, out)
+
+
+def _latest_version() -> str:
+    data = _http_json(GITHUB_LATEST)
+    tag = str(data.get("tag_name") or "").lstrip("v")
+    if not VERSION_RE.match(tag):
+        raise RuntimeError(f"Unexpected release tag: {tag!r}")
+    return tag
+
+
+def _normalize_version(version: str) -> str:
+    cleaned = (version or "").strip().lstrip("v")
+    if not VERSION_RE.match(cleaned):
+        raise ValueError(f"Invalid version: {version!r}")
+    return cleaned
+
+
+def _write_steamos_persist_files() -> None:
+    PROFILE_D.parent.mkdir(parents=True, exist_ok=True)
+    PROFILE_D.write_text(
+        "# Managed by NetBird Decky plugin\n"
+        "append_path /opt/netbird/bin\n",
+        encoding="utf-8",
+    )
+    try:
+        PROFILE_D.chmod(0o644)
+    except OSError:
+        pass
+
+    ATOMIC_UPDATE.parent.mkdir(parents=True, exist_ok=True)
+    ATOMIC_UPDATE.write_text(
+        "# Managed by NetBird Decky plugin — keep across SteamOS updates\n"
+        "/etc/profile.d/netbird.sh\n",
+        encoding="utf-8",
+    )
+    try:
+        ATOMIC_UPDATE.chmod(0o644)
+    except OSError:
+        pass
+
+
+async def _run_system(
+    cmd: list[str], timeout: float = 60.0
+) -> dict[str, Any]:
+    decky.logger.info(f"System: {' '.join(cmd)}")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "TERM": "dumb"},
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": f"Timed out after {timeout}s",
+                "code": -2,
+            }
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+        code = proc.returncode if proc.returncode is not None else -1
+        return {
+            "success": code == 0,
+            "stdout": stdout,
+            "stderr": stderr,
+            "code": code,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": str(exc),
+            "code": -1,
+        }
+
+
+async def _systemctl_is_active(unit: str = "netbird") -> bool:
+    result = await _run_system(["systemctl", "is-active", unit], timeout=10.0)
+    return (result["stdout"] or "").strip() == "active"
+
+
+async def _systemctl_is_enabled(unit: str = "netbird") -> bool:
+    result = await _run_system(["systemctl", "is-enabled", unit], timeout=10.0)
+    return (result["stdout"] or "").strip() in ("enabled", "enabled-runtime", "static")
 
 
 def _extract_auth_url(text: str) -> Optional[str]:
@@ -179,7 +326,7 @@ class Plugin:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": "netbird binary not found. Install NetBird on the Steam Deck first.",
+                "stderr": "netbird binary not found. Use Install in the plugin to install NetBird under /opt/netbird.",
                 "code": -1,
                 "auth_url": None,
             }
@@ -252,11 +399,268 @@ class Plugin:
 
     async def get_binary_info(self) -> dict[str, Any]:
         binary = _resolve_binary()
+        managed = OPT_BIN.is_file()
+        service_active = await _systemctl_is_active() if (
+            managed or SYSTEMD_UNIT.is_file() or binary
+        ) else False
+        service_enabled = await _systemctl_is_enabled() if (
+            managed or SYSTEMD_UNIT.is_file()
+        ) else False
         if not binary:
-            return {"found": False, "path": None, "version": None}
+            return {
+                "found": False,
+                "path": None,
+                "version": None,
+                "managed": False,
+                "service_active": False,
+                "service_enabled": False,
+                "opt_path": str(OPT_BIN),
+            }
         result = await self._run(["version"], timeout=10.0)
         version = (result["stdout"] or result["stderr"] or "").strip() or None
-        return {"found": True, "path": binary, "version": version}
+        return {
+            "found": True,
+            "path": binary,
+            "version": version,
+            "managed": managed,
+            "service_active": service_active,
+            "service_enabled": service_enabled,
+            "opt_path": str(OPT_BIN),
+        }
+
+    async def get_install_status(self) -> dict[str, Any]:
+        info = await self.get_binary_info()
+        latest: Optional[str] = None
+        latest_error: Optional[str] = None
+        try:
+            latest = await asyncio.to_thread(_latest_version)
+        except Exception as exc:
+            latest_error = str(exc)
+        return {
+            **info,
+            "latest": latest,
+            "latest_error": latest_error,
+            "update_available": bool(
+                latest
+                and info.get("version")
+                and latest not in str(info.get("version"))
+            ),
+        }
+
+    async def install_netbird(self, version: str = "") -> dict[str, Any]:
+        """Install or update NetBird under /opt/netbird for SteamOS persistence."""
+        logs: list[str] = []
+        try:
+            if version.strip():
+                ver = _normalize_version(version)
+            else:
+                logs.append("Resolving latest GitHub release…")
+                ver = await asyncio.to_thread(_latest_version)
+            logs.append(f"Installing NetBird v{ver}")
+
+            arch = _linux_arch()
+            url = GITHUB_RELEASE_ASSET.format(version=ver, arch=arch)
+            logs.append(f"Downloading {url}")
+
+            OPT_BIN_DIR.mkdir(parents=True, exist_ok=True)
+            if OPT_TMP.exists():
+                shutil.rmtree(OPT_TMP, ignore_errors=True)
+            OPT_TMP.mkdir(parents=True, exist_ok=True)
+
+            archive = OPT_TMP / f"netbird_{ver}_linux_{arch}.tar.gz"
+
+            def _download_and_extract() -> str:
+                _http_download(url, archive)
+                with tarfile.open(archive, "r:gz") as tar:
+                    # Find netbird binary member
+                    member = None
+                    for m in tar.getmembers():
+                        name = Path(m.name).name
+                        if name == "netbird" and m.isfile():
+                            member = m
+                            break
+                    if member is None:
+                        raise RuntimeError("Archive does not contain netbird binary")
+                    with tempfile.TemporaryDirectory(dir=str(OPT_TMP)) as tmp:
+                        try:
+                            tar.extract(member, path=tmp, filter="data")
+                        except TypeError:
+                            # Python < 3.12
+                            tar.extract(member, path=tmp)
+                        extracted = Path(tmp) / member.name
+                        # tar may nest paths
+                        if not extracted.is_file():
+                            matches = list(Path(tmp).rglob("netbird"))
+                            if not matches:
+                                raise RuntimeError("Failed to extract netbird binary")
+                            extracted = matches[0]
+                        staging = OPT_BIN_DIR / f".netbird.new.{os.getpid()}"
+                        shutil.copy2(extracted, staging)
+                        os.chmod(staging, 0o755)
+                        staging.replace(OPT_BIN)
+                return str(OPT_BIN)
+
+            binary_path = await asyncio.to_thread(_download_and_extract)
+            logs.append(f"Installed binary to {binary_path}")
+
+            _write_steamos_persist_files()
+            logs.append(f"Wrote {PROFILE_D} and {ATOMIC_UPDATE}")
+
+            # Stop existing service before reinstalling unit (best effort)
+            await _run_system(
+                [str(OPT_BIN), "service", "stop"], timeout=30.0
+            )
+            uninstall = await _run_system(
+                [str(OPT_BIN), "service", "uninstall"], timeout=30.0
+            )
+            if uninstall["stderr"]:
+                logs.append(f"service uninstall: {uninstall['stderr'].strip()}")
+
+            install = await _run_system(
+                [str(OPT_BIN), "service", "install"], timeout=60.0
+            )
+            logs.append(
+                f"service install: exit {install['code']} "
+                f"{(install['stdout'] or install['stderr'] or '').strip()}"
+            )
+            if not install["success"]:
+                return {
+                    "success": False,
+                    "version": ver,
+                    "path": binary_path,
+                    "message": "\n".join(logs),
+                    "stderr": install["stderr"] or "service install failed",
+                }
+
+            # Ensure enabled on boot (some installs only start once)
+            enable = await _run_system(
+                ["systemctl", "enable", "netbird.service"], timeout=30.0
+            )
+            logs.append(
+                f"systemctl enable: exit {enable['code']} "
+                f"{(enable['stdout'] or enable['stderr'] or '').strip()}"
+            )
+
+            start = await _run_system(
+                [str(OPT_BIN), "service", "start"], timeout=60.0
+            )
+            if not start["success"]:
+                # Fallback to systemctl
+                start = await _run_system(
+                    ["systemctl", "start", "netbird.service"], timeout=60.0
+                )
+            logs.append(
+                f"service start: exit {start['code']} "
+                f"{(start['stdout'] or start['stderr'] or '').strip()}"
+            )
+
+            # Cleanup download temp
+            shutil.rmtree(OPT_TMP, ignore_errors=True)
+
+            info = await self.get_binary_info()
+            return {
+                "success": bool(start["success"] or info.get("service_active")),
+                "version": ver,
+                "path": binary_path,
+                "message": "\n".join(logs),
+                "stderr": "" if start["success"] else (start["stderr"] or ""),
+                "install": info,
+            }
+        except urllib.error.HTTPError as exc:
+            msg = f"HTTP {exc.code} while downloading NetBird: {exc.reason}"
+            decky.logger.error(msg)
+            return {
+                "success": False,
+                "version": None,
+                "path": None,
+                "message": "\n".join(logs),
+                "stderr": msg,
+            }
+        except Exception as exc:
+            decky.logger.error(f"install_netbird failed: {exc}")
+            return {
+                "success": False,
+                "version": None,
+                "path": None,
+                "message": "\n".join(logs),
+                "stderr": str(exc),
+            }
+
+    async def update_netbird(self) -> dict[str, Any]:
+        return await self.install_netbird("")
+
+    async def uninstall_netbird(self) -> dict[str, Any]:
+        logs: list[str] = []
+        binary = _resolve_binary() or (str(OPT_BIN) if OPT_BIN.is_file() else None)
+        try:
+            if binary:
+                await _run_system([binary, "down"], timeout=30.0)
+                stop = await _run_system([binary, "service", "stop"], timeout=30.0)
+                logs.append(f"service stop: exit {stop['code']}")
+                un = await _run_system(
+                    [binary, "service", "uninstall"], timeout=30.0
+                )
+                logs.append(
+                    f"service uninstall: exit {un['code']} "
+                    f"{(un['stdout'] or un['stderr'] or '').strip()}"
+                )
+
+            # Fallback cleanup if unit remains
+            await _run_system(
+                ["systemctl", "disable", "--now", "netbird.service"], timeout=30.0
+            )
+            if SYSTEMD_UNIT.is_file():
+                try:
+                    SYSTEMD_UNIT.unlink()
+                    logs.append(f"Removed {SYSTEMD_UNIT}")
+                except OSError as exc:
+                    logs.append(f"Could not remove unit: {exc}")
+                await _run_system(["systemctl", "daemon-reload"], timeout=30.0)
+
+            for path in (PROFILE_D, ATOMIC_UPDATE):
+                if path.is_file():
+                    try:
+                        path.unlink()
+                        logs.append(f"Removed {path}")
+                    except OSError as exc:
+                        logs.append(f"Could not remove {path}: {exc}")
+
+            if OPT_ROOT.exists():
+                shutil.rmtree(OPT_ROOT, ignore_errors=True)
+                logs.append(f"Removed {OPT_ROOT}")
+
+            return {
+                "success": not OPT_BIN.is_file(),
+                "message": "\n".join(logs) or "Uninstalled",
+                "stderr": "",
+            }
+        except Exception as exc:
+            decky.logger.error(f"uninstall_netbird failed: {exc}")
+            return {
+                "success": False,
+                "message": "\n".join(logs),
+                "stderr": str(exc),
+            }
+
+    async def service_start(self) -> dict[str, Any]:
+        binary = _resolve_binary()
+        if binary:
+            result = await self._run(["service", "start"], timeout=60.0)
+            if result["success"]:
+                return result
+        return await _run_system(
+            ["systemctl", "start", "netbird.service"], timeout=60.0
+        )
+
+    async def service_stop(self) -> dict[str, Any]:
+        binary = _resolve_binary()
+        if binary:
+            result = await self._run(["service", "stop"], timeout=60.0)
+            if result["success"]:
+                return result
+        return await _run_system(
+            ["systemctl", "stop", "netbird.service"], timeout=60.0
+        )
 
     async def get_settings(self) -> dict[str, Any]:
         settings = _load_settings()

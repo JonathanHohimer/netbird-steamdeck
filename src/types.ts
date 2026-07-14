@@ -10,6 +10,25 @@ export type BinaryInfo = {
   found: boolean;
   path: string | null;
   version: string | null;
+  managed?: boolean;
+  service_active?: boolean;
+  service_enabled?: boolean;
+  opt_path?: string;
+};
+
+export type InstallStatus = BinaryInfo & {
+  latest: string | null;
+  latest_error: string | null;
+  update_available: boolean;
+};
+
+export type InstallResult = {
+  success: boolean;
+  version?: string | null;
+  path?: string | null;
+  message?: string;
+  stderr?: string;
+  install?: BinaryInfo;
 };
 
 export type PluginSettings = {

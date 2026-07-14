@@ -6,6 +6,7 @@ import { getBinaryInfo, getSettings, getStatus } from "./api";
 import { AuthPanel } from "./components/Auth";
 import { CliRunnerPanel } from "./components/CliRunner";
 import { ConnectionPanel } from "./components/Connection";
+import { InstallPanel } from "./components/Install";
 import { NetworksPanel } from "./components/Networks";
 import { StatusPanel } from "./components/Status";
 import type { BinaryInfo, StatusResult } from "./types";
@@ -31,6 +32,11 @@ function Content() {
   const refreshAll = useCallback(async () => {
     await refreshStatus();
     setRefreshToken((n) => n + 1);
+    try {
+      setBinary(await getBinaryInfo());
+    } catch (e) {
+      console.error(e);
+    }
   }, [refreshStatus]);
 
   useEffect(() => {
@@ -70,10 +76,18 @@ function Content() {
               ? "Checking…"
               : binary.found
                 ? `${binary.path}${binary.version ? ` (${binary.version})` : ""}`
-                : "Not found — install NetBird first"}
+                : "Not found — use Install below"}
           </Field>
         </PanelSectionRow>
       </PanelSection>
+
+      <InstallPanel
+        binary={binary}
+        setBinary={setBinary}
+        busy={busy}
+        setBusy={setBusy}
+        onRefresh={refreshAll}
+      />
 
       <ConnectionPanel
         status={status}

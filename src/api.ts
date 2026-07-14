@@ -2,12 +2,22 @@ import { callable } from "@decky/api";
 import type {
   BinaryInfo,
   CommandResult,
+  InstallResult,
+  InstallStatus,
   NetworksListResult,
   PluginSettings,
   StatusResult,
 } from "./types";
 
 export const getBinaryInfo = callable<[], BinaryInfo>("get_binary_info");
+export const getInstallStatus = callable<[], InstallStatus>("get_install_status");
+export const installNetbird = callable<[version?: string], InstallResult>(
+  "install_netbird"
+);
+export const updateNetbird = callable<[], InstallResult>("update_netbird");
+export const uninstallNetbird = callable<[], InstallResult>("uninstall_netbird");
+export const serviceStart = callable<[], CommandResult>("service_start");
+export const serviceStop = callable<[], CommandResult>("service_stop");
 export const getSettings = callable<[], PluginSettings>("get_settings");
 export const setManagementUrl = callable<[url: string], PluginSettings>(
   "set_management_url"

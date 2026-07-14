@@ -5,7 +5,7 @@
   "api_version": 1,
   "publish": {
     "tags": ["vpn", "netbird", "mesh", "networking"],
-    "description": "Control NetBird from Gaming Mode: connect, disconnect, select networks, view status, and run CLI commands.",
+    "description": "Install and control NetBird on Steam Deck from Gaming Mode.",
     "image": "https://opengraph.githubassets.com/1/JonathanHohimer/netbird-steamdeck"
   }
 }
