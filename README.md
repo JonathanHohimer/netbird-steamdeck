@@ -137,7 +137,8 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 | Latest release shows SSL / CERTIFICATE_VERIFY_FAILED | Reinstall plugin ≥1.1.1 — HTTPS uses Decky’s `certifi` CA bundle |
 | Permission denied `/opt/netbird` | `plugin.json` must use `"flags": ["root"]` (not `_root`). Reinstall the zip and restart Decky |
 | Plugin privileges shows NOT root | Same as above — Decky only elevates for the exact flag `root` |
-| Install fails downloading | Deck needs network; check the install log in the plugin |
+| `libcrypto.so.3` / OPENSSL errors during service install | Fixed in ≥1.1.3 by clearing Decky’s `LD_LIBRARY_PATH` for child processes — reinstall the plugin zip |
+| Install fails downloading | Deck needs network; check the **Install log** section (and Copy install log) |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | SSO does nothing in Game Mode | Copy the shown URL and open it on another device |
 | Status empty | Service must be running; use **Start service** then refresh |

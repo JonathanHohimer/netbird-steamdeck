@@ -47,6 +47,9 @@ export function InstallPanel({
       const info = await getInstallStatus();
       setStatus(info);
       setBinary(info);
+      if (info.last_install_log) {
+        setLog(info.last_install_log);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -90,10 +93,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Install failed",
-          body: (result.stderr || result.message || "Unknown error").slice(
-            0,
-            120
-          ),
+          body: "See Install log below for the full error.",
         });
       }
     });
@@ -113,10 +113,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Update failed",
-          body: (result.stderr || result.message || "Unknown error").slice(
-            0,
-            120
-          ),
+          body: "See Install log below for the full error.",
         });
       }
     });
@@ -135,10 +132,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Uninstall failed",
-          body: (result.stderr || result.message || "Unknown error").slice(
-            0,
-            120
-          ),
+          body: "See Install log below for the full error.",
         });
       }
     });
@@ -251,22 +245,48 @@ export function InstallPanel({
           Refresh install status
         </ButtonItem>
       </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Install log" focusable={true}>
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: "11px",
+              margin: 0,
+              maxHeight: "360px",
+              overflow: "auto",
+              userSelect: "text",
+            }}
+          >
+            {log || "(no install log yet — run Install / Update to capture output)"}
+          </pre>
+        </Field>
+      </PanelSectionRow>
       {log ? (
         <PanelSectionRow>
-          <Field label="Install log" focusable={false}>
-            <pre
-              style={{
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                fontSize: "11px",
-                margin: 0,
-                maxHeight: "160px",
-                overflow: "auto",
-              }}
-            >
-              {log}
-            </pre>
-          </Field>
+          <ButtonItem
+            layout="below"
+            onClick={async () => {
+              try {
+                if (navigator.clipboard?.writeText) {
+                  await navigator.clipboard.writeText(log);
+                  toaster.toast({ title: "NetBird", body: "Install log copied" });
+                } else {
+                  toaster.toast({
+                    title: "NetBird",
+                    body: "Clipboard unavailable — scroll the log above",
+                  });
+                }
+              } catch {
+                toaster.toast({
+                  title: "NetBird",
+                  body: "Could not copy — scroll the log above",
+                });
+              }
+            }}
+          >
+            Copy install log
+          </ButtonItem>
         </PanelSectionRow>
       ) : null}
     </PanelSection>

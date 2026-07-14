@@ -22,6 +22,7 @@ export type InstallStatus = BinaryInfo & {
   latest: string | null;
   latest_error: string | null;
   update_available: boolean;
+  last_install_log?: string;
 };
 
 export type InstallResult = {

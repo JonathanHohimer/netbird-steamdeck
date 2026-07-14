@@ -219,6 +219,50 @@ def _write_steamos_persist_files() -> None:
         pass
 
 
+def _clean_subprocess_env() -> dict[str, str]:
+    """Env for system binaries — Drop Decky/PyInstaller OpenSSL from LD_LIBRARY_PATH.
+
+    Decky Loader sets LD_LIBRARY_PATH to its /tmp/_MEI* bundle. That makes
+    netbird/systemctl fail with libcrypto.so.3 / OPENSSL_ version errors.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in (
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "LD_AUDIT",
+    )}
+    env["TERM"] = "dumb"
+    # Prefer system OpenSSL / certs for child processes
+    if "SSL_CERT_FILE" not in env and certifi is not None:
+        try:
+            env["SSL_CERT_FILE"] = certifi.where()
+        except Exception:
+            pass
+    return env
+
+
+def _install_log_path() -> Path:
+    return Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / "last_install.log"
+
+
+def _save_install_log(text: str) -> None:
+    try:
+        path = _install_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text or "", encoding="utf-8")
+    except Exception as exc:
+        decky.logger.warning(f"Could not save install log: {exc}")
+
+
+def _load_install_log() -> str:
+    path = _install_log_path()
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+
 async def _run_system(
     cmd: list[str], timeout: float = 60.0
 ) -> dict[str, Any]:
@@ -228,7 +272,7 @@ async def _run_system(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "TERM": "dumb"},
+            env=_clean_subprocess_env(),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
@@ -398,7 +442,7 @@ class Plugin:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "TERM": "dumb"},
+                env=_clean_subprocess_env(),
             )
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
@@ -508,24 +552,34 @@ class Plugin:
                 and info.get("version")
                 and latest not in str(info.get("version"))
             ),
+            "last_install_log": _load_install_log(),
         }
 
     async def install_netbird(self, version: str = "") -> dict[str, Any]:
         """Install or update NetBird under /opt/netbird for SteamOS persistence."""
         logs: list[str] = []
+
+        def _finish(**kwargs: Any) -> dict[str, Any]:
+            message = str(kwargs.get("message") or "\n".join(logs))
+            stderr = str(kwargs.get("stderr") or "")
+            full = "\n\n".join(part for part in (message, stderr) if part)
+            _save_install_log(full)
+            kwargs["message"] = message
+            return kwargs
+
         try:
             if os.geteuid() != 0:
-                return {
-                    "success": False,
-                    "version": None,
-                    "path": None,
-                    "message": "\n".join(logs),
-                    "stderr": (
+                return _finish(
+                    success=False,
+                    version=None,
+                    path=None,
+                    message="\n".join(logs),
+                    stderr=(
                         "Permission denied writing /opt/netbird: plugin is not running as root "
                         f"(uid={os.geteuid()}). Reinstall the plugin zip so plugin.json has "
                         '"flags": ["root"], then restart Decky / PluginLoader.'
                     ),
-                }
+                )
 
             if version.strip():
                 ver = _normalize_version(version)
@@ -544,16 +598,16 @@ class Plugin:
                     shutil.rmtree(OPT_TMP, ignore_errors=True)
                 OPT_TMP.mkdir(parents=True, exist_ok=True)
             except PermissionError as exc:
-                return {
-                    "success": False,
-                    "version": ver if "ver" in locals() else None,
-                    "path": None,
-                    "message": "\n".join(logs),
-                    "stderr": (
+                return _finish(
+                    success=False,
+                    version=ver,
+                    path=None,
+                    message="\n".join(logs),
+                    stderr=(
                         f"Permission denied creating {OPT_ROOT}: {exc}. "
                         'Ensure plugin.json includes "flags": ["root"] and reinstall/reload the plugin.'
                     ),
-                }
+                )
 
             archive = OPT_TMP / f"netbird_{ver}_linux_{arch}.tar.gz"
             await _http_download(url, archive, timeout=300.0)
@@ -602,32 +656,40 @@ class Plugin:
             uninstall = await _run_system(
                 [str(OPT_BIN), "service", "uninstall"], timeout=30.0
             )
-            if uninstall["stderr"]:
-                logs.append(f"service uninstall: {uninstall['stderr'].strip()}")
+            if uninstall["stdout"] or uninstall["stderr"]:
+                logs.append(
+                    "service uninstall:\n"
+                    f"{(uninstall['stdout'] or '').strip()}\n"
+                    f"{(uninstall['stderr'] or '').strip()}".strip()
+                )
 
             install = await _run_system(
                 [str(OPT_BIN), "service", "install"], timeout=60.0
             )
             logs.append(
-                f"service install: exit {install['code']} "
-                f"{(install['stdout'] or install['stderr'] or '').strip()}"
+                f"service install: exit {install['code']}\n"
+                f"{(install['stdout'] or '').strip()}\n"
+                f"{(install['stderr'] or '').strip()}".strip()
             )
             if not install["success"]:
-                return {
-                    "success": False,
-                    "version": ver,
-                    "path": binary_path,
-                    "message": "\n".join(logs),
-                    "stderr": install["stderr"] or "service install failed",
-                }
+                return _finish(
+                    success=False,
+                    version=ver,
+                    path=binary_path,
+                    message="\n".join(logs),
+                    stderr=install["stderr"]
+                    or install["stdout"]
+                    or "service install failed",
+                )
 
             # Ensure enabled on boot (some installs only start once)
             enable = await _run_system(
                 ["systemctl", "enable", "netbird.service"], timeout=30.0
             )
             logs.append(
-                f"systemctl enable: exit {enable['code']} "
-                f"{(enable['stdout'] or enable['stderr'] or '').strip()}"
+                f"systemctl enable: exit {enable['code']}\n"
+                f"{(enable['stdout'] or '').strip()}\n"
+                f"{(enable['stderr'] or '').strip()}".strip()
             )
 
             start = await _run_system(
@@ -639,41 +701,42 @@ class Plugin:
                     ["systemctl", "start", "netbird.service"], timeout=60.0
                 )
             logs.append(
-                f"service start: exit {start['code']} "
-                f"{(start['stdout'] or start['stderr'] or '').strip()}"
+                f"service start: exit {start['code']}\n"
+                f"{(start['stdout'] or '').strip()}\n"
+                f"{(start['stderr'] or '').strip()}".strip()
             )
 
             # Cleanup download temp
             shutil.rmtree(OPT_TMP, ignore_errors=True)
 
             info = await self.get_binary_info()
-            return {
-                "success": bool(start["success"] or info.get("service_active")),
-                "version": ver,
-                "path": binary_path,
-                "message": "\n".join(logs),
-                "stderr": "" if start["success"] else (start["stderr"] or ""),
-                "install": info,
-            }
+            return _finish(
+                success=bool(start["success"] or info.get("service_active")),
+                version=ver,
+                path=binary_path,
+                message="\n".join(logs),
+                stderr="" if start["success"] else (start["stderr"] or start["stdout"] or ""),
+                install=info,
+            )
         except urllib.error.HTTPError as exc:
             msg = f"HTTP {exc.code} while downloading NetBird: {exc.reason}"
             decky.logger.error(msg)
-            return {
-                "success": False,
-                "version": None,
-                "path": None,
-                "message": "\n".join(logs),
-                "stderr": msg,
-            }
+            return _finish(
+                success=False,
+                version=None,
+                path=None,
+                message="\n".join(logs),
+                stderr=msg,
+            )
         except Exception as exc:
             decky.logger.error(f"install_netbird failed: {exc}")
-            return {
-                "success": False,
-                "version": None,
-                "path": None,
-                "message": "\n".join(logs),
-                "stderr": str(exc),
-            }
+            return _finish(
+                success=False,
+                version=None,
+                path=None,
+                message="\n".join(logs),
+                stderr=str(exc),
+            )
 
     async def update_netbird(self) -> dict[str, Any]:
         return await self.install_netbird("")
