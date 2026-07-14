@@ -175,6 +175,13 @@ export function InstallPanel({
   return (
     <PanelSection title="Install (Steam Deck)">
       <PanelSectionRow>
+        <Field label="Plugin privileges" focusable={false}>
+          {binary?.is_root || status?.is_root
+            ? "root (can install to /opt)"
+            : `NOT root (uid ${binary?.uid ?? status?.uid ?? "?"}) — reinstall zip with flags: ["root"]`}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
         <Field label="Managed install" focusable={false}>
           {managed
             ? "Yes (/opt/netbird)"

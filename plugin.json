@@ -1,7 +1,7 @@
 {
   "name": "NetBird",
   "author": "Jonathan Hohimer",
-  "flags": ["_root"],
+  "flags": ["root"],
   "api_version": 1,
   "publish": {
     "tags": ["vpn", "netbird", "mesh", "networking"],

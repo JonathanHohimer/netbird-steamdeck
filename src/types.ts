@@ -14,6 +14,8 @@ export type BinaryInfo = {
   service_active?: boolean;
   service_enabled?: boolean;
   opt_path?: string;
+  is_root?: boolean;
+  uid?: number;
 };
 
 export type InstallStatus = BinaryInfo & {

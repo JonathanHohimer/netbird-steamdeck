@@ -20,7 +20,7 @@ For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 ## Prerequisites
 
 1. Steam Deck with [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) installed
-2. This plugin installed (ships with the `_root` flag so it can write `/opt` and manage the service)
+2. This plugin installed (ships with the `root` flag so it can write `/opt` and manage the service)
 
 You do **not** need a separate NetBird install first.
 
@@ -135,6 +135,8 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 |---|---|
 | CLI “Not found” | Use **Install NetBird**; confirm the plugin has root (`plugin.json` flags) |
 | Latest release shows SSL / CERTIFICATE_VERIFY_FAILED | Reinstall plugin ≥1.1.1 — HTTPS uses Decky’s `certifi` CA bundle |
+| Permission denied `/opt/netbird` | `plugin.json` must use `"flags": ["root"]` (not `_root`). Reinstall the zip and restart Decky |
+| Plugin privileges shows NOT root | Same as above — Decky only elevates for the exact flag `root` |
 | Install fails downloading | Deck needs network; check the install log in the plugin |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | SSO does nothing in Game Mode | Copy the shown URL and open it on another device |

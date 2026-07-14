@@ -59,7 +59,7 @@ When installed on the Deck, Decky expects approximately:
 
 | File | Role |
 |---|---|
-| `plugin.json` | Name, author, `api_version: 1`, publish metadata, `_root` flag |
+| `plugin.json` | Name, author, `api_version: 1`, publish metadata, `root` flag |
 | `package.json` | Version string Decky/UI may surface; build scripts for developers |
 | `dist/index.js` | Frontend bundle from `pnpm run build` |
 | `main.py` | Backend `Plugin` class; every async method is an RPC |
@@ -170,7 +170,7 @@ Setup keys are intentionally not stored.
 
 | File | Purpose |
 |---|---|
-| `plugin.json` | Decky identity; `"flags": ["_root"]` so install/service ops can write system paths |
+| `plugin.json` | Decky identity; `"flags": ["root"]` so install/service ops can write system paths |
 | `package.json` | Plugin version + `pnpm` scripts (`build`, `watch`) |
 | `rollup.config.js` | Uses `@decky/rollup` preset to emit `dist/index.js` |
 | `tsconfig.json` | Strict TS compile options for `src/` |

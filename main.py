@@ -458,6 +458,7 @@ class Plugin:
     async def get_binary_info(self) -> dict[str, Any]:
         binary = _resolve_binary()
         managed = OPT_BIN.is_file()
+        is_root = os.geteuid() == 0
         service_active = await _systemctl_is_active() if (
             managed or SYSTEMD_UNIT.is_file() or binary
         ) else False
@@ -473,6 +474,8 @@ class Plugin:
                 "service_active": False,
                 "service_enabled": False,
                 "opt_path": str(OPT_BIN),
+                "is_root": is_root,
+                "uid": os.geteuid(),
             }
         result = await self._run(["version"], timeout=10.0)
         version = (result["stdout"] or result["stderr"] or "").strip() or None
@@ -484,6 +487,8 @@ class Plugin:
             "service_active": service_active,
             "service_enabled": service_enabled,
             "opt_path": str(OPT_BIN),
+            "is_root": is_root,
+            "uid": os.geteuid(),
         }
 
     async def get_install_status(self) -> dict[str, Any]:
@@ -509,6 +514,19 @@ class Plugin:
         """Install or update NetBird under /opt/netbird for SteamOS persistence."""
         logs: list[str] = []
         try:
+            if os.geteuid() != 0:
+                return {
+                    "success": False,
+                    "version": None,
+                    "path": None,
+                    "message": "\n".join(logs),
+                    "stderr": (
+                        "Permission denied writing /opt/netbird: plugin is not running as root "
+                        f"(uid={os.geteuid()}). Reinstall the plugin zip so plugin.json has "
+                        '"flags": ["root"], then restart Decky / PluginLoader.'
+                    ),
+                }
+
             if version.strip():
                 ver = _normalize_version(version)
             else:
@@ -520,10 +538,22 @@ class Plugin:
             url = GITHUB_RELEASE_ASSET.format(version=ver, arch=arch)
             logs.append(f"Downloading {url}")
 
-            OPT_BIN_DIR.mkdir(parents=True, exist_ok=True)
-            if OPT_TMP.exists():
-                shutil.rmtree(OPT_TMP, ignore_errors=True)
-            OPT_TMP.mkdir(parents=True, exist_ok=True)
+            try:
+                OPT_BIN_DIR.mkdir(parents=True, exist_ok=True)
+                if OPT_TMP.exists():
+                    shutil.rmtree(OPT_TMP, ignore_errors=True)
+                OPT_TMP.mkdir(parents=True, exist_ok=True)
+            except PermissionError as exc:
+                return {
+                    "success": False,
+                    "version": ver if "ver" in locals() else None,
+                    "path": None,
+                    "message": "\n".join(logs),
+                    "stderr": (
+                        f"Permission denied creating {OPT_ROOT}: {exc}. "
+                        'Ensure plugin.json includes "flags": ["root"] and reinstall/reload the plugin.'
+                    ),
+                }
 
             archive = OPT_TMP / f"netbird_{ver}_linux_{arch}.tar.gz"
             await _http_download(url, archive, timeout=300.0)
