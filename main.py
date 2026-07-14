@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import platform
+import pty
 import re
 import shlex
 import shutil
@@ -531,11 +532,15 @@ class Plugin:
         *,
         url_timeout: float = 45.0,
         wait_after_url: float = 180.0,
+        show_qr: bool = False,
     ) -> dict[str, Any]:
         """Run a NetBird command that prints an SSO URL then blocks.
 
         Returns as soon as a URL is seen (keeping the process alive so the
         daemon can finish login), or when the process exits / times out.
+
+        When show_qr is True, passes --qr and runs under a PTY because NetBird
+        only renders the QR code when stdout is a TTY.
         """
         binary = _resolve_binary()
         if not binary:
@@ -547,8 +552,18 @@ class Plugin:
                 "auth_url": None,
             }
 
-        cmd = [binary, *args]
-        decky.logger.info(f"Running (SSO wait): {_redact_cmd(cmd)}")
+        nb_args = list(args)
+        if show_qr and "--qr" not in nb_args:
+            nb_args.append("--qr")
+
+        cmd = [binary, *nb_args]
+        decky.logger.info(f"Running (SSO wait): {_redact_cmd(cmd)} pty={show_qr}")
+
+        if show_qr:
+            return await self._run_until_auth_url_pty(
+                cmd, url_timeout=url_timeout, wait_after_url=wait_after_url
+            )
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -640,11 +655,148 @@ class Plugin:
                 "pending_sso": False,
             }
 
+    async def _run_until_auth_url_pty(
+        self,
+        cmd: list[str],
+        *,
+        url_timeout: float = 45.0,
+        wait_after_url: float = 180.0,
+    ) -> dict[str, Any]:
+        """Like _run_until_auth_url but with a PTY so `netbird --qr` renders."""
+        master_fd, slave_fd = pty.openpty()
+        env = _clean_subprocess_env()
+        # Hint programs that care about color/width
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("COLUMNS", "80")
+        env.setdefault("LINES", "40")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                start_new_session=True,
+                close_fds=True,
+            )
+        finally:
+            os.close(slave_fd)
+
+        loop = asyncio.get_running_loop()
+        buffer = ""
+        auth_url: Optional[str] = None
+        deadline = loop.time() + url_timeout
+
+        def _read_chunk() -> bytes:
+            try:
+                return os.read(master_fd, 4096)
+            except OSError:
+                return b""
+
+        try:
+            while auth_url is None and proc.returncode is None:
+                if loop.time() >= deadline:
+                    break
+                try:
+                    data = await asyncio.wait_for(
+                        loop.run_in_executor(None, _read_chunk),
+                        timeout=0.4,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                if not data:
+                    break
+                buffer += data.decode("utf-8", errors="replace")
+                auth_url = _extract_auth_url(buffer)
+
+            if auth_url is None:
+                auth_url = _extract_auth_url(buffer)
+
+            if auth_url and proc.returncode is None:
+                async def _finish_wait() -> None:
+                    try:
+                        end = asyncio.get_running_loop().time() + wait_after_url
+                        while proc.returncode is None:
+                            if asyncio.get_running_loop().time() >= end:
+                                proc.kill()
+                                break
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    loop.run_in_executor(None, _read_chunk),
+                                    timeout=0.5,
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            if not chunk:
+                                break
+                        await proc.wait()
+                    except Exception:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            os.close(master_fd)
+                        except OSError:
+                            pass
+
+                asyncio.create_task(_finish_wait())
+                return {
+                    "success": False,
+                    "stdout": buffer,
+                    "stderr": "",
+                    "code": 0,
+                    "auth_url": auth_url,
+                    "pending_sso": True,
+                }
+
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            code = proc.returncode if proc.returncode is not None else -1
+            return {
+                "success": code == 0,
+                "stdout": buffer,
+                "stderr": "",
+                "code": code,
+                "auth_url": auth_url,
+                "pending_sso": False,
+            }
+        except Exception as exc:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            decky.logger.error(f"SSO PTY command failed: {exc}")
+            return {
+                "success": False,
+                "stdout": buffer,
+                "stderr": str(exc),
+                "code": -1,
+                "auth_url": auth_url,
+                "pending_sso": False,
+            }
+
     def _auth_flags(
         self,
         management_url: Optional[str] = None,
         setup_key: Optional[str] = None,
         no_browser: bool = False,
+        show_qr: bool = False,
     ) -> list[str]:
         flags: list[str] = []
         url = (management_url or "").strip()
@@ -657,6 +809,8 @@ class Plugin:
             flags.extend(["--setup-key", key])
         if no_browser:
             flags.append("--no-browser")
+        if show_qr:
+            flags.append("--qr")
         return flags
 
     async def get_binary_info(self) -> dict[str, Any]:
@@ -1097,15 +1251,19 @@ class Plugin:
         setup_key: str = "",
         management_url: str = "",
         no_browser: bool = True,
+        show_qr: bool = False,
     ) -> dict[str, Any]:
         use_no_browser = no_browser and not (setup_key or "").strip()
         flags = self._auth_flags(
             management_url=management_url,
             setup_key=setup_key,
             no_browser=use_no_browser,
+            show_qr=show_qr and use_no_browser,
         )
         if use_no_browser:
-            return await self._run_until_auth_url(["up", *flags])
+            return await self._run_until_auth_url(
+                ["up", *flags], show_qr=show_qr
+            )
         return await self._run(["up", *flags], timeout=120.0, log_cmd=True)
 
     async def down(self) -> dict[str, Any]:
@@ -1116,6 +1274,7 @@ class Plugin:
         setup_key: str = "",
         management_url: str = "",
         no_browser: bool = True,
+        show_qr: bool = False,
     ) -> dict[str, Any]:
         # SSO login needs --no-browser in Gaming Mode; setup-key does not
         use_no_browser = bool(no_browser) and not (setup_key or "").strip()
@@ -1123,14 +1282,19 @@ class Plugin:
             management_url=management_url,
             setup_key=setup_key,
             no_browser=use_no_browser,
+            show_qr=show_qr and use_no_browser,
         )
         if use_no_browser:
             # Prefer `up` so we connect after SSO; stream until URL appears
-            result = await self._run_until_auth_url(["up", *flags])
-            if result.get("auth_url"):
+            result = await self._run_until_auth_url(
+                ["up", *flags], show_qr=show_qr
+            )
+            if result.get("auth_url") or result.get("success"):
                 return result
             # Fallback to login verb
-            return await self._run_until_auth_url(["login", *flags])
+            return await self._run_until_auth_url(
+                ["login", *flags], show_qr=show_qr
+            )
         return await self._run(["login", *flags], timeout=120.0, log_cmd=True)
 
     async def logout(self) -> dict[str, Any]:

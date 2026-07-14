@@ -5,6 +5,7 @@ import {
   ButtonItem,
   Field,
   Navigation,
+  ToggleField,
 } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useState } from "react";
@@ -62,6 +63,7 @@ export function AuthPanel({
 }: Props) {
   const [savingUrl, setSavingUrl] = useState(false);
   const [ssoLog, setSsoLog] = useState("");
+  const [showQr, setShowQr] = useState(true);
 
   const saveUrl = async () => {
     setSavingUrl(true);
@@ -99,7 +101,12 @@ export function AuthPanel({
         });
         return;
       }
-      const result = await netbirdUp(setupKey.trim(), managementUrl.trim(), false);
+      const result = await netbirdUp(
+        setupKey.trim(),
+        managementUrl.trim(),
+        false,
+        false
+      );
       if (result.success) {
         toaster.toast({ title: "NetBird", body: "Connected with setup key" });
         setAuthUrl(null);
@@ -114,17 +121,24 @@ export function AuthPanel({
 
   const ssoLogin = () =>
     withBusy(async () => {
-      const result = await netbirdLogin("", managementUrl.trim(), true);
+      const result = await netbirdLogin(
+        "",
+        managementUrl.trim(),
+        true,
+        showQr
+      );
       const combined = [result.stdout, result.stderr].filter(Boolean).join("\n");
       setSsoLog(combined);
       if (result.auth_url) {
         setAuthUrl(result.auth_url);
-        const opened = openSsoUrl(result.auth_url);
+        if (!showQr) {
+          openSsoUrl(result.auth_url);
+        }
         toaster.toast({
           title: "SSO login",
-          body: opened
-            ? "Opened Steam browser — finish login there (or use Copy URL)."
-            : "Copy the URL below and open it on a phone/PC to finish login.",
+          body: showQr
+            ? "Scan the QR below with another device (or copy the URL)."
+            : "Opened Steam browser — or copy the URL for another device.",
         });
       } else if (result.success) {
         toaster.toast({ title: "NetBird", body: "Login succeeded" });
@@ -180,6 +194,15 @@ export function AuthPanel({
         <ButtonItem layout="below" disabled={busy} onClick={connectWithKey}>
           Connect with setup key
         </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Show QR for SSO"
+          description="Uses netbird --qr so another device can scan the login URL"
+          checked={showQr}
+          disabled={busy}
+          onChange={setShowQr}
+        />
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy} onClick={ssoLogin}>
@@ -239,16 +262,24 @@ export function AuthPanel({
       ) : null}
       {ssoLog ? (
         <PanelSectionRow>
-          <Field label="SSO output" focusable={true}>
+          <Field
+            label={showQr ? "SSO QR / output" : "SSO output"}
+            focusable={true}
+          >
             <pre
               style={{
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                fontSize: "11px",
+                whiteSpace: "pre",
+                wordBreak: "normal",
+                overflowX: "auto",
+                fontSize: "9px",
+                lineHeight: "1.05",
                 margin: 0,
-                maxHeight: "200px",
-                overflow: "auto",
+                maxHeight: "320px",
+                overflowY: "auto",
                 userSelect: "text",
+                background: "#000",
+                color: "#fff",
+                padding: "8px",
               }}
             >
               {ssoLog}

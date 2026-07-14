@@ -1,6 +1,6 @@
 {
   "name": "netbird-steamdeck",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Decky Loader plugin to install and control NetBird on the Steam Deck",
   "type": "module",
   "scripts": {

@@ -154,7 +154,7 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 | Plugin privileges shows NOT root | Same as above — Decky only elevates for the exact flag `root` |
 | `libcrypto.so.3` / OPENSSL errors during service install | Fixed in ≥1.1.3 by clearing Decky’s `LD_LIBRARY_PATH` for child processes — reinstall the plugin zip |
 | Unit present but disabled / service not detected | Use **Enable & start service**; ≥1.1.4 also treats a reachable daemon socket as active |
-| SSO does nothing in Game Mode | ≥1.1.4 streams the login URL, opens Steam’s browser when possible, and shows **Copy SSO URL** — finish login there |
+| SSO does nothing in Game Mode | ≥1.1.4 streams the login URL; enable **Show QR for SSO** (uses `netbird --qr`) to scan from a phone, or **Copy SSO URL** |
 | Install fails downloading | Deck needs network; check the **Install log** section (and Copy install log) |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | SSO does nothing in Game Mode | Copy the shown URL and open it on another device |

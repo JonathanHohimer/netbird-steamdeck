@@ -25,12 +25,22 @@ export const setManagementUrl = callable<[url: string], PluginSettings>(
 );
 export const getStatus = callable<[detailed?: boolean], StatusResult>("status");
 export const netbirdUp = callable<
-  [setup_key?: string, management_url?: string, no_browser?: boolean],
+  [
+    setup_key?: string,
+    management_url?: string,
+    no_browser?: boolean,
+    show_qr?: boolean,
+  ],
   CommandResult
 >("up");
 export const netbirdDown = callable<[], CommandResult>("down");
 export const netbirdLogin = callable<
-  [setup_key?: string, management_url?: string, no_browser?: boolean],
+  [
+    setup_key?: string,
+    management_url?: string,
+    no_browser?: boolean,
+    show_qr?: boolean,
+  ],
   CommandResult
 >("login");
 export const netbirdLogout = callable<[], CommandResult>("logout");
