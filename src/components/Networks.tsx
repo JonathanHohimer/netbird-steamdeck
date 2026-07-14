@@ -58,37 +58,47 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
     }
   };
 
+  const resultMessage = (result: unknown): string => {
+    if (typeof result === "string") return result;
+    if (result && typeof result === "object") {
+      const r = result as { stderr?: string; stdout?: string; success?: boolean };
+      return (r.stderr || r.stdout || "Unknown error").slice(0, 160);
+    }
+    return "Unknown error";
+  };
+
   const toggleNetwork = (net: NetworkEntry, selected: boolean) =>
     withBusy(async () => {
+      // Pass a plain string id (not a one-element array) for safer Decky IPC.
       const result = selected
-        ? await networksSelect([net.id], true)
-        : await networksDeselect([net.id]);
-      if (!result.success) {
+        ? await networksSelect(net.id, true)
+        : await networksDeselect(net.id);
+      if (typeof result === "string" || !result?.success) {
         toaster.toast({
           title: "Network update failed",
-          body: (result.stderr || result.stdout || "Unknown error").slice(0, 120),
+          body: resultMessage(result),
         });
       }
     });
 
   const selectAll = () =>
     withBusy(async () => {
-      const result = await networksSelect(["all"]);
-      if (!result.success) {
+      const result = await networksSelect("all");
+      if (typeof result === "string" || !result?.success) {
         toaster.toast({
           title: "Select all failed",
-          body: (result.stderr || result.stdout || "Unknown error").slice(0, 120),
+          body: resultMessage(result),
         });
       }
     });
 
   const deselectAll = () =>
     withBusy(async () => {
-      const result = await networksDeselect(["all"]);
-      if (!result.success) {
+      const result = await networksDeselect("all");
+      if (typeof result === "string" || !result?.success) {
         toaster.toast({
           title: "Deselect all failed",
-          body: (result.stderr || result.stdout || "Unknown error").slice(0, 120),
+          body: resultMessage(result),
         });
       }
     });

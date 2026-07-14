@@ -38,6 +38,7 @@ OPT_TMP = OPT_ROOT / "tmp"
 PROFILE_D = Path("/etc/profile.d/netbird.sh")
 ATOMIC_UPDATE = Path("/etc/atomic-update.conf.d/netbird.conf")
 SYSTEMD_UNIT = Path("/etc/systemd/system/netbird.service")
+STATE_DIR = Path("/var/lib/netbird")
 DAEMON_SOCKETS = [
     Path("/var/run/netbird.sock"),
     Path("/run/netbird.sock"),
@@ -430,6 +431,44 @@ def _redact_cmd(cmd: list[str]) -> str:
             continue
         redacted.append(part)
     return " ".join(redacted)
+
+
+def _normalize_network_ids(network_ids: Any) -> list[str]:
+    """Normalize Decky/frontend network id args into a clean id list.
+
+    Important: a bare string must NOT be iterated (that yields characters).
+    Accepts list/tuple, a single id string, or whitespace/comma-separated ids.
+    """
+    if network_ids is None:
+        return ["all"]
+    if isinstance(network_ids, bool):
+        return ["all"]
+    if isinstance(network_ids, (int, float)):
+        return [str(network_ids)]
+    if isinstance(network_ids, str):
+        text = network_ids.strip()
+        if not text:
+            return ["all"]
+        if "," in text:
+            parts = [p.strip() for p in text.split(",")]
+        else:
+            parts = text.split()
+        cleaned = [p for p in parts if p]
+        return cleaned or ["all"]
+    if isinstance(network_ids, (list, tuple)):
+        out: list[str] = []
+        for item in network_ids:
+            out.extend(_normalize_network_ids(item))
+        # Drop accidental "all" mixed with real ids
+        out = [x for x in out if x]
+        if not out:
+            return ["all"]
+        if len(out) > 1:
+            out = [x for x in out if x.lower() != "all"] or ["all"]
+        return out
+    # Unknown shape — stringify once, never iterate
+    text = str(network_ids).strip()
+    return [text] if text else ["all"]
 
 
 def _parse_networks_list(output: str) -> list[dict[str, Any]]:
@@ -1196,6 +1235,79 @@ class Plugin:
     async def update_netbird(self) -> dict[str, Any]:
         return await self.install_netbird("")
 
+    async def clear_netbird_state(self) -> dict[str, Any]:
+        """Stop the daemon and wipe /var/lib/netbird (keys, profiles, config)."""
+        logs: list[str] = []
+        if os.geteuid() != 0:
+            return {
+                "success": False,
+                "message": "\n".join(logs),
+                "stderr": (
+                    "Permission denied clearing state: plugin is not running as root "
+                    '(plugin.json must use flags: ["root"]).'
+                ),
+            }
+
+        # Daemon must be down before wiping its state dir.
+        stop = await self.service_stop()
+        logs.append(
+            f"service stop: exit {stop.get('code')}\n"
+            f"{(stop.get('stdout') or '').strip()}\n"
+            f"{(stop.get('stderr') or '').strip()}".strip()
+        )
+
+        try:
+            state = STATE_DIR.resolve()
+            if state != Path("/var/lib/netbird"):
+                return {
+                    "success": False,
+                    "message": "\n".join(logs),
+                    "stderr": f"Refusing to clear unexpected path: {state}",
+                }
+
+            removed = 0
+            if state.exists():
+                for child in list(state.iterdir()):
+                    try:
+                        if child.is_dir() and not child.is_symlink():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink(missing_ok=True)
+                        removed += 1
+                    except OSError as exc:
+                        logs.append(f"Failed to remove {child}: {exc}")
+                logs.append(f"Removed {removed} entr{'y' if removed == 1 else 'ies'} from {state}")
+            else:
+                logs.append(f"{state} did not exist")
+
+            state.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(state, 0o755)
+            except OSError:
+                pass
+            logs.append(f"Recreated empty {state}")
+
+            remaining = list(state.iterdir()) if state.is_dir() else []
+            ok = len(remaining) == 0
+            if not ok:
+                logs.append(
+                    "State dir not empty after clear: "
+                    + ", ".join(str(p.name) for p in remaining[:20])
+                )
+            return {
+                "success": ok,
+                "message": "\n".join(logs),
+                "stderr": "" if ok else "Some state files could not be removed",
+                "path": str(state),
+            }
+        except Exception as exc:
+            decky.logger.error(f"clear_netbird_state failed: {exc}")
+            return {
+                "success": False,
+                "message": "\n".join(logs),
+                "stderr": str(exc),
+            }
+
     async def uninstall_netbird(self) -> dict[str, Any]:
         logs: list[str] = []
         binary = _resolve_binary() or (str(OPT_BIN) if OPT_BIN.is_file() else None)
@@ -1440,29 +1552,54 @@ class Plugin:
 
     async def networks_select(
         self,
-        network_ids: Optional[list[str]] = None,
-        append: bool = False,
+        network_ids: Any = "all",
+        append: Any = False,
     ) -> dict[str, Any]:
-        ids = network_ids or ["all"]
-        cleaned = [str(i).strip() for i in ids if str(i).strip()]
-        if not cleaned:
-            cleaned = ["all"]
-        flags: list[str] = []
-        # Default CLI mode is replace; -a appends for per-network toggles
-        if append and cleaned != ["all"]:
-            flags.append("-a")
-        return await self._run(
-            ["networks", "select", *flags, *cleaned], timeout=12.0
-        )
+        cleaned = _normalize_network_ids(network_ids)
+        do_append = bool(append) and cleaned != ["all"]
 
-    async def networks_deselect(
-        self, network_ids: Optional[list[str]] = None
-    ) -> dict[str, Any]:
-        ids = network_ids or ["all"]
-        cleaned = [str(i).strip() for i in ids if str(i).strip()]
-        if not cleaned:
-            cleaned = ["all"]
-        return await self._run(["networks", "deselect", *cleaned], timeout=12.0)
+        # Avoid `networks select -a` — some installs lack --append, and Decky
+        # list marshalling has also produced bad argv. For per-network toggles,
+        # merge with the current selection and use replace mode instead.
+        if do_append:
+            listed = await self.networks_list()
+            current = [
+                str(n.get("id"))
+                for n in (listed.get("networks") or [])
+                if n.get("selected") and n.get("id")
+            ]
+            merged: list[str] = []
+            for nid in [*current, *cleaned]:
+                if nid and nid not in merged and nid.lower() != "all":
+                    merged.append(nid)
+            if not merged:
+                merged = cleaned
+            cleaned = merged
+
+        result = await self._run(
+            ["networks", "select", *cleaned], timeout=20.0
+        )
+        # Older alias fallback
+        if not result["success"] and "unknown command" in (
+            result.get("stderr") or ""
+        ).lower():
+            result = await self._run(
+                ["routes", "select", *cleaned], timeout=20.0
+            )
+        return result
+
+    async def networks_deselect(self, network_ids: Any = "all") -> dict[str, Any]:
+        cleaned = _normalize_network_ids(network_ids)
+        result = await self._run(
+            ["networks", "deselect", *cleaned], timeout=20.0
+        )
+        if not result["success"] and "unknown command" in (
+            result.get("stderr") or ""
+        ).lower():
+            result = await self._run(
+                ["routes", "deselect", *cleaned], timeout=20.0
+            )
+        return result
 
     async def run_command(self, args: str = "") -> dict[str, Any]:
         """Run arbitrary netbird subcommand args (no shell)."""

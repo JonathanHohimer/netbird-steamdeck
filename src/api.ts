@@ -16,6 +16,9 @@ export const installNetbird = callable<[version?: string], InstallResult>(
 );
 export const updateNetbird = callable<[], InstallResult>("update_netbird");
 export const uninstallNetbird = callable<[], InstallResult>("uninstall_netbird");
+export const clearNetbirdState = callable<[], InstallResult>(
+  "clear_netbird_state"
+);
 export const serviceStart = callable<[], CommandResult>("service_start");
 export const serviceStop = callable<[], CommandResult>("service_stop");
 export const serviceEnable = callable<[], CommandResult>("service_enable");
@@ -45,12 +48,13 @@ export const netbirdLogin = callable<
 >("login");
 export const netbirdLogout = callable<[], CommandResult>("logout");
 export const networksList = callable<[], NetworksListResult>("networks_list");
+/** Pass a single id, "all", or space/comma-separated ids. */
 export const networksSelect = callable<
-  [network_ids?: string[], append?: boolean],
+  [network_ids?: string | string[], append?: boolean],
   CommandResult
 >("networks_select");
 export const networksDeselect = callable<
-  [network_ids?: string[]],
+  [network_ids?: string | string[]],
   CommandResult
 >("networks_deselect");
 export const runCommand = callable<[args: string], CommandResult>("run_command");

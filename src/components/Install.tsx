@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getInstallStatus,
   installNetbird,
+  clearNetbirdState,
   serviceStart,
   serviceStop,
   uninstallNetbird,
@@ -137,6 +138,29 @@ export function InstallPanel({
       }
     });
 
+  const doClearState = () =>
+    withBusy(async () => {
+      toaster.toast({
+        title: "NetBird",
+        body: "Stopping service and wiping /var/lib/netbird…",
+      });
+      const result = await clearNetbirdState();
+      setLog(
+        [result.message, result.stderr].filter(Boolean).join("\n\n") || ""
+      );
+      if (result.success) {
+        toaster.toast({
+          title: "NetBird state cleared",
+          body: "Re-login (setup key or SSO) after starting the service.",
+        });
+      } else {
+        toaster.toast({
+          title: "Clear state failed",
+          body: "See Install log below for the full error.",
+        });
+      }
+    });
+
   const doService = (action: "start" | "stop") =>
     withBusy(async () => {
       const result =
@@ -233,6 +257,11 @@ export function InstallPanel({
           onClick={() => void doService(serviceActive ? "stop" : "start")}
         >
           {serviceActive ? "Stop service" : "Enable & start service"}
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={doClearState}>
+          Clear NetBird state (/var/lib/netbird)
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
