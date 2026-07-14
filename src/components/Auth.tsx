@@ -262,29 +262,54 @@ export function AuthPanel({
       ) : null}
       {ssoLog ? (
         <PanelSectionRow>
-          <Field
-            label={showQr ? "SSO QR / output" : "SSO output"}
-            focusable={true}
+          <div
+            style={{
+              width: "100%",
+              marginTop: "4px",
+              marginBottom: "8px",
+            }}
           >
-            <pre
+            <div
               style={{
-                whiteSpace: "pre",
-                wordBreak: "normal",
-                overflowX: "auto",
-                fontSize: "9px",
-                lineHeight: "1.05",
-                margin: 0,
-                maxHeight: "320px",
-                overflowY: "auto",
-                userSelect: "text",
-                background: "#000",
-                color: "#fff",
-                padding: "8px",
+                fontSize: "12px",
+                opacity: 0.85,
+                marginBottom: "4px",
               }}
             >
-              {ssoLog}
-            </pre>
-          </Field>
+              {showQr ? "SSO QR / output" : "SSO output"}
+            </div>
+            <div
+              style={{
+                width: "100%",
+                overflowX: "auto",
+                overflowY: "auto",
+                maxHeight: "420px",
+                background: "#000",
+                padding: "6px 4px",
+              }}
+            >
+              <pre
+                style={{
+                  whiteSpace: "pre",
+                  wordBreak: "normal",
+                  overflow: "visible",
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                  fontSize: "5.5px",
+                  lineHeight: "1.0",
+                  letterSpacing: "0",
+                  margin: 0,
+                  padding: 0,
+                  color: "#fff",
+                  userSelect: "text",
+                  display: "inline-block",
+                  minWidth: "100%",
+                }}
+              >
+                {ssoLog}
+              </pre>
+            </div>
+          </div>
         </PanelSectionRow>
       ) : null}
     </PanelSection>

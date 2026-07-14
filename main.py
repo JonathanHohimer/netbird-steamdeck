@@ -1,14 +1,18 @@
 import asyncio
+import fcntl
 import json
 import os
 import platform
 import pty
 import re
+import select
 import shlex
 import shutil
 import ssl
+import struct
 import tarfile
 import tempfile
+import termios
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -59,6 +63,7 @@ BINARY_CANDIDATES = [
 ]
 
 AUTH_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 UNSAFE_TOKEN_RE = re.compile(r"[;&|`$<>\\\n\r]")
 
 # Tokens that look like network IDs / route names in `networks list` output
@@ -270,6 +275,29 @@ def _load_install_log() -> str:
     return ""
 
 
+async def _terminate_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
+    """SIGTERM, then SIGKILL; never hang forever on a wedged child."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+        return
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
+
+
 async def _run_system(
     cmd: list[str], timeout: float = 60.0
 ) -> dict[str, Any]:
@@ -286,11 +314,16 @@ async def _run_system(
                 proc.communicate(), timeout=timeout
             )
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
+            await _terminate_proc(proc)
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                stdout_b, stderr_b = b"", b""
             return {
                 "success": False,
-                "stdout": "",
+                "stdout": stdout_b.decode("utf-8", errors="replace"),
                 "stderr": f"Timed out after {timeout}s",
                 "code": -2,
             }
@@ -313,13 +346,13 @@ async def _run_system(
 
 
 async def _systemctl_is_active(unit: str = "netbird.service") -> bool:
-    result = await _run_system(["systemctl", "is-active", unit], timeout=10.0)
+    result = await _run_system(["systemctl", "is-active", unit], timeout=5.0)
     state = (result["stdout"] or "").strip()
     return state == "active"
 
 
 async def _systemctl_is_enabled(unit: str = "netbird.service") -> bool:
-    result = await _run_system(["systemctl", "is-enabled", unit], timeout=10.0)
+    result = await _run_system(["systemctl", "is-enabled", unit], timeout=5.0)
     state = (result["stdout"] or "").strip()
     return state in ("enabled", "enabled-runtime", "static", "indirect")
 
@@ -364,6 +397,19 @@ def _extract_auth_url(text: str) -> Optional[str]:
         ):
             return url.rstrip(").,]}'\"")
     return matches[0].rstrip(").,]}'\"") if matches else None
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def _set_pty_winsize(fd: int, rows: int = 60, cols: int = 160) -> None:
+    """Give the PTY a wide window so QR half-blocks are not line-wrapped."""
+    try:
+        packed = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+    except OSError:
+        pass
 
 
 def _redact_cmd(cmd: list[str]) -> str:
@@ -490,8 +536,13 @@ class Plugin:
                 )
             except asyncio.TimeoutError:
                 timed_out = True
-                proc.kill()
-                stdout_b, stderr_b = await proc.communicate()
+                await _terminate_proc(proc)
+                try:
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        proc.communicate(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    stdout_b, stderr_b = b"", b""
 
             stdout = stdout_b.decode("utf-8", errors="replace")
             stderr = stderr_b.decode("utf-8", errors="replace")
@@ -661,14 +712,24 @@ class Plugin:
         *,
         url_timeout: float = 45.0,
         wait_after_url: float = 180.0,
+        qr_drain_quiet: float = 0.35,
+        qr_drain_max: float = 2.5,
     ) -> dict[str, Any]:
-        """Like _run_until_auth_url but with a PTY so `netbird --qr` renders."""
+        """Like _run_until_auth_url but with a PTY so `netbird --qr` renders.
+
+        NetBird prints the login URL first, then the QR. We keep reading after
+        the URL appears so the QR is in the returned stdout. Reads are
+        non-blocking — timed-out blocking reads previously dropped PTY data.
+        """
         master_fd, slave_fd = pty.openpty()
+        _set_pty_winsize(master_fd, rows=60, cols=160)
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
         env = _clean_subprocess_env()
-        # Hint programs that care about color/width
         env.setdefault("TERM", "xterm-256color")
-        env.setdefault("COLUMNS", "80")
-        env.setdefault("LINES", "40")
+        env["COLUMNS"] = "160"
+        env["LINES"] = "60"
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -688,30 +749,63 @@ class Plugin:
         auth_url: Optional[str] = None
         deadline = loop.time() + url_timeout
 
-        def _read_chunk() -> bytes:
-            try:
-                return os.read(master_fd, 4096)
-            except OSError:
-                return b""
+        def _read_available() -> bytes:
+            chunks: list[bytes] = []
+            while True:
+                try:
+                    ready, _, _ = select.select([master_fd], [], [], 0)
+                    if not ready:
+                        break
+                    data = os.read(master_fd, 65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    break
+            return b"".join(chunks)
+
+        async def _poll_once() -> bytes:
+            data = _read_available()
+            if data:
+                return data
+            # Sleep briefly so we don't spin; data can arrive during the sleep.
+            await asyncio.sleep(0.05)
+            return _read_available()
+
+        async def _drain_for_qr() -> None:
+            """After URL is seen, keep reading until quiet (QR prints next)."""
+            nonlocal buffer, auth_url
+            end = loop.time() + qr_drain_max
+            last_data = loop.time()
+            while loop.time() < end and proc.returncode is None:
+                data = await _poll_once()
+                if data:
+                    buffer += data.decode("utf-8", errors="replace")
+                    last_data = loop.time()
+                    if auth_url is None:
+                        auth_url = _extract_auth_url(buffer)
+                elif loop.time() - last_data >= qr_drain_quiet:
+                    break
 
         try:
             while auth_url is None and proc.returncode is None:
                 if loop.time() >= deadline:
                     break
-                try:
-                    data = await asyncio.wait_for(
-                        loop.run_in_executor(None, _read_chunk),
-                        timeout=0.4,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not data:
-                    break
-                buffer += data.decode("utf-8", errors="replace")
-                auth_url = _extract_auth_url(buffer)
+                data = await _poll_once()
+                if data:
+                    buffer += data.decode("utf-8", errors="replace")
+                    auth_url = _extract_auth_url(buffer)
 
             if auth_url is None:
                 auth_url = _extract_auth_url(buffer)
+
+            # URL always prints before the QR; wait for QR to finish.
+            if auth_url and proc.returncode is None:
+                await _drain_for_qr()
+
+            stdout = _strip_ansi(buffer)
 
             if auth_url and proc.returncode is None:
                 async def _finish_wait() -> None:
@@ -721,14 +815,8 @@ class Plugin:
                             if asyncio.get_running_loop().time() >= end:
                                 proc.kill()
                                 break
-                            try:
-                                chunk = await asyncio.wait_for(
-                                    loop.run_in_executor(None, _read_chunk),
-                                    timeout=0.5,
-                                )
-                            except asyncio.TimeoutError:
-                                continue
-                            if not chunk:
+                            data = await _poll_once()
+                            if not data and proc.returncode is not None:
                                 break
                         await proc.wait()
                     except Exception:
@@ -746,7 +834,7 @@ class Plugin:
                 asyncio.create_task(_finish_wait())
                 return {
                     "success": False,
-                    "stdout": buffer,
+                    "stdout": stdout,
                     "stderr": "",
                     "code": 0,
                     "auth_url": auth_url,
@@ -766,7 +854,7 @@ class Plugin:
             code = proc.returncode if proc.returncode is not None else -1
             return {
                 "success": code == 0,
-                "stdout": buffer,
+                "stdout": stdout,
                 "stderr": "",
                 "code": code,
                 "auth_url": auth_url,
@@ -784,7 +872,7 @@ class Plugin:
             decky.logger.error(f"SSO PTY command failed: {exc}")
             return {
                 "success": False,
-                "stdout": buffer,
+                "stdout": _strip_ansi(buffer),
                 "stderr": str(exc),
                 "code": -1,
                 "auth_url": auth_url,
@@ -825,15 +913,16 @@ class Plugin:
         if not service_enabled:
             service_enabled = await _systemctl_is_enabled("netbird")
 
-        # Daemon may be running even if systemctl reporting is flaky from Decky
+        # Prefer socket + cheap systemctl; avoid hanging netbird status against a wedged daemon
         daemon_socket = _daemon_socket_exists()
         daemon_reachable = False
-        if binary:
-            status_probe = await self._run(["status"], timeout=8.0)
-            probe_text = f"{status_probe['stdout']}\n{status_probe['stderr']}"
-            daemon_reachable = not _daemon_unreachable_text(probe_text) and bool(
-                (status_probe["stdout"] or status_probe["stderr"] or "").strip()
-            )
+        if binary and daemon_socket:
+            status_probe = await self._run(["status"], timeout=3.0)
+            if status_probe.get("code") != -2:
+                probe_text = f"{status_probe['stdout']}\n{status_probe['stderr']}"
+                daemon_reachable = not _daemon_unreachable_text(probe_text) and bool(
+                    (status_probe["stdout"] or status_probe["stderr"] or "").strip()
+                )
 
         # Treat daemon reply / socket as "service active" for UI purposes
         if daemon_reachable or daemon_socket:
@@ -854,7 +943,7 @@ class Plugin:
                 "is_root": is_root,
                 "uid": os.geteuid(),
             }
-        result = await self._run(["version"], timeout=10.0)
+        result = await self._run(["version"], timeout=5.0)
         version = (result["stdout"] or result["stderr"] or "").strip() or None
         return {
             "found": True,
@@ -987,10 +1076,13 @@ class Plugin:
 
             # Stop existing service before reinstalling unit (best effort)
             await _run_system(
-                [str(OPT_BIN), "service", "stop"], timeout=30.0
+                ["systemctl", "stop", "netbird.service"], timeout=12.0
+            )
+            await _run_system(
+                [str(OPT_BIN), "service", "stop"], timeout=8.0
             )
             uninstall = await _run_system(
-                [str(OPT_BIN), "service", "uninstall"], timeout=30.0
+                [str(OPT_BIN), "service", "uninstall"], timeout=12.0
             )
             if uninstall["stdout"] or uninstall["stderr"]:
                 logs.append(
@@ -1000,7 +1092,7 @@ class Plugin:
                 )
 
             install = await _run_system(
-                [str(OPT_BIN), "service", "install"], timeout=60.0
+                [str(OPT_BIN), "service", "install"], timeout=30.0
             )
             logs.append(
                 f"service install: exit {install['code']}\n"
@@ -1009,7 +1101,7 @@ class Plugin:
             )
 
             # NetBird may return non-zero even when the unit lands; continue if present.
-            await _run_system(["systemctl", "daemon-reload"], timeout=30.0)
+            await _run_system(["systemctl", "daemon-reload"], timeout=15.0)
             unit_ok = SYSTEMD_UNIT.is_file()
             if not install["success"] and not unit_ok:
                 return _finish(
@@ -1028,7 +1120,7 @@ class Plugin:
 
             # Force enable + start via systemctl (more reliable than service helpers on Deck)
             enable = await _run_system(
-                ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
+                ["systemctl", "enable", "--now", "netbird.service"], timeout=20.0
             )
             logs.append(
                 f"systemctl enable --now: exit {enable['code']}\n"
@@ -1038,18 +1130,18 @@ class Plugin:
             if not enable["success"]:
                 # Retry as separate steps
                 enable_only = await _run_system(
-                    ["systemctl", "enable", "netbird.service"], timeout=30.0
+                    ["systemctl", "enable", "netbird.service"], timeout=15.0
                 )
                 logs.append(
                     f"systemctl enable: exit {enable_only['code']}\n"
                     f"{(enable_only['stdout'] or enable_only['stderr'] or '').strip()}"
                 )
                 start = await _run_system(
-                    ["systemctl", "start", "netbird.service"], timeout=60.0
+                    ["systemctl", "start", "netbird.service"], timeout=15.0
                 )
                 if not start["success"]:
                     start = await _run_system(
-                        [str(OPT_BIN), "service", "start"], timeout=60.0
+                        [str(OPT_BIN), "service", "start"], timeout=12.0
                     )
                 logs.append(
                     f"service start: exit {start['code']}\n"
@@ -1108,12 +1200,16 @@ class Plugin:
         logs: list[str] = []
         binary = _resolve_binary() or (str(OPT_BIN) if OPT_BIN.is_file() else None)
         try:
+            # Prefer systemd first so a wedged daemon can't burn 30s+ per step.
+            await _run_system(
+                ["systemctl", "stop", "netbird.service"], timeout=12.0
+            )
             if binary:
-                await _run_system([binary, "down"], timeout=30.0)
-                stop = await _run_system([binary, "service", "stop"], timeout=30.0)
+                await _run_system([binary, "down"], timeout=8.0)
+                stop = await _run_system([binary, "service", "stop"], timeout=8.0)
                 logs.append(f"service stop: exit {stop['code']}")
                 un = await _run_system(
-                    [binary, "service", "uninstall"], timeout=30.0
+                    [binary, "service", "uninstall"], timeout=12.0
                 )
                 logs.append(
                     f"service uninstall: exit {un['code']} "
@@ -1122,7 +1218,7 @@ class Plugin:
 
             # Fallback cleanup if unit remains
             await _run_system(
-                ["systemctl", "disable", "--now", "netbird.service"], timeout=30.0
+                ["systemctl", "disable", "--now", "netbird.service"], timeout=12.0
             )
             if SYSTEMD_UNIT.is_file():
                 try:
@@ -1130,7 +1226,7 @@ class Plugin:
                     logs.append(f"Removed {SYSTEMD_UNIT}")
                 except OSError as exc:
                     logs.append(f"Could not remove unit: {exc}")
-                await _run_system(["systemctl", "daemon-reload"], timeout=30.0)
+                await _run_system(["systemctl", "daemon-reload"], timeout=15.0)
 
             for path in (PROFILE_D, ATOMIC_UPDATE):
                 if path.is_file():
@@ -1158,36 +1254,62 @@ class Plugin:
             }
 
     async def service_start(self) -> dict[str, Any]:
-        await _run_system(["systemctl", "daemon-reload"], timeout=20.0)
+        # Prefer systemd — `netbird service start` can hang waiting on the daemon.
+        await _run_system(["systemctl", "daemon-reload"], timeout=10.0)
         enable = await _run_system(
-            ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
+            ["systemctl", "enable", "--now", "netbird.service"], timeout=20.0
         )
-        if enable["success"]:
+        if enable["success"] or enable["code"] == 0:
             return enable
+        start = await _run_system(
+            ["systemctl", "start", "netbird.service"], timeout=15.0
+        )
+        if start["success"]:
+            return start
         binary = _resolve_binary()
         if binary:
-            result = await self._run(["service", "start"], timeout=60.0)
+            result = await self._run(["service", "start"], timeout=12.0)
             if result["success"]:
                 return result
-        start = await _run_system(
-            ["systemctl", "start", "netbird.service"], timeout=60.0
-        )
-        return start
+        return start if start.get("code") != -1 else enable
 
     async def service_stop(self) -> dict[str, Any]:
+        # Prefer systemd stop. `netbird service stop` often blocks for a full
+        # timeout when the daemon is wedged on its control socket.
+        stop = await _run_system(
+            ["systemctl", "stop", "netbird.service"], timeout=12.0
+        )
+        if stop["success"]:
+            return stop
+        if stop.get("code") == -2:
+            # Timed out — force-kill the unit and return promptly.
+            killed = await _run_system(
+                ["systemctl", "kill", "-s", "SIGKILL", "netbird.service"],
+                timeout=8.0,
+            )
+            return {
+                "success": killed["success"]
+                or not await _systemctl_is_active("netbird.service"),
+                "stdout": stop.get("stdout", "") + "\n" + killed.get("stdout", ""),
+                "stderr": (
+                    "systemctl stop timed out; tried SIGKILL.\n"
+                    + (stop.get("stderr") or "")
+                    + "\n"
+                    + (killed.get("stderr") or "")
+                ).strip(),
+                "code": 0 if killed["success"] else -2,
+            }
         binary = _resolve_binary()
         if binary:
-            result = await self._run(["service", "stop"], timeout=60.0)
+            result = await self._run(["service", "stop"], timeout=8.0)
             if result["success"]:
                 return result
-        return await _run_system(
-            ["systemctl", "stop", "netbird.service"], timeout=60.0
-        )
+        return stop
 
     async def service_enable(self) -> dict[str, Any]:
-        await _run_system(["systemctl", "daemon-reload"], timeout=20.0)
+        await _run_system(["systemctl", "daemon-reload"], timeout=10.0)
         return await _run_system(
-            ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
+            ["systemctl", "enable", "--now", "netbird.service"], timeout=20.0
         )
 
     async def get_settings(self) -> dict[str, Any]:
@@ -1201,8 +1323,8 @@ class Plugin:
         return {"management_url": settings["management_url"]}
 
     async def status(self, detailed: bool = False) -> dict[str, Any]:
-        # Prefer JSON for structured UI
-        result = await self._run(["status", "--json"], timeout=10.0)
+        # Prefer JSON for structured UI — fail fast if the daemon is wedged.
+        result = await self._run(["status", "--json"], timeout=5.0)
         parsed: Any = None
         if result["success"] and result["stdout"].strip():
             try:
@@ -1211,13 +1333,18 @@ class Plugin:
                 parsed = None
 
         detail_text = ""
-        if detailed or parsed is None:
-            detail = await self._run(["status", "--detail"], timeout=10.0)
-            detail_text = detail["stdout"] or detail["stderr"]
+        # Don't pile on more hanging CLI calls after a timeout.
+        if result.get("code") != -2 and (detailed or parsed is None):
+            detail = await self._run(["status", "--detail"], timeout=5.0)
+            if detail.get("code") != -2:
+                detail_text = detail["stdout"] or detail["stderr"]
 
-        # Also grab a short summary when JSON failed
-        if parsed is None and not detail_text:
-            summary = await self._run(["status"], timeout=10.0)
+        if (
+            result.get("code") != -2
+            and parsed is None
+            and not detail_text
+        ):
+            summary = await self._run(["status"], timeout=4.0)
             detail_text = summary["stdout"] or summary["stderr"]
 
         daemon_status = None
@@ -1264,10 +1391,10 @@ class Plugin:
             return await self._run_until_auth_url(
                 ["up", *flags], show_qr=show_qr
             )
-        return await self._run(["up", *flags], timeout=120.0, log_cmd=True)
+        return await self._run(["up", *flags], timeout=45.0, log_cmd=True)
 
     async def down(self) -> dict[str, Any]:
-        return await self._run(["down"], timeout=30.0)
+        return await self._run(["down"], timeout=12.0)
 
     async def login(
         self,
@@ -1295,17 +1422,17 @@ class Plugin:
             return await self._run_until_auth_url(
                 ["login", *flags], show_qr=show_qr
             )
-        return await self._run(["login", *flags], timeout=120.0, log_cmd=True)
+        return await self._run(["login", *flags], timeout=45.0, log_cmd=True)
 
     async def logout(self) -> dict[str, Any]:
-        return await self._run(["logout"], timeout=30.0)
+        return await self._run(["logout"], timeout=12.0)
 
     async def networks_list(self) -> dict[str, Any]:
-        result = await self._run(["networks", "list"], timeout=15.0)
+        result = await self._run(["networks", "list"], timeout=8.0)
         networks = _parse_networks_list(result["stdout"] or "")
         # Older alias fallback
-        if result["success"] and not networks:
-            alt = await self._run(["routes", "list"], timeout=15.0)
+        if result["success"] and not networks and result.get("code") != -2:
+            alt = await self._run(["routes", "list"], timeout=8.0)
             if alt["success"]:
                 networks = _parse_networks_list(alt["stdout"] or "")
                 result = {**result, "stdout": alt["stdout"], "stderr": alt["stderr"]}
@@ -1325,7 +1452,7 @@ class Plugin:
         if append and cleaned != ["all"]:
             flags.append("-a")
         return await self._run(
-            ["networks", "select", *flags, *cleaned], timeout=30.0
+            ["networks", "select", *flags, *cleaned], timeout=12.0
         )
 
     async def networks_deselect(
@@ -1335,7 +1462,7 @@ class Plugin:
         cleaned = [str(i).strip() for i in ids if str(i).strip()]
         if not cleaned:
             cleaned = ["all"]
-        return await self._run(["networks", "deselect", *cleaned], timeout=30.0)
+        return await self._run(["networks", "deselect", *cleaned], timeout=12.0)
 
     async def run_command(self, args: str = "") -> dict[str, Any]:
         """Run arbitrary netbird subcommand args (no shell)."""
@@ -1394,4 +1521,4 @@ class Plugin:
                     "code": -1,
                     "auth_url": None,
                 }
-        return await self._run(tokens, timeout=120.0)
+        return await self._run(tokens, timeout=60.0)
