@@ -5,6 +5,7 @@ import platform
 import re
 import shlex
 import shutil
+import ssl
 import tarfile
 import tempfile
 import urllib.error
@@ -13,6 +14,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 import decky
+
+try:
+    import certifi
+except ImportError:  # pragma: no cover - always present under Decky Loader
+    certifi = None  # type: ignore
+
+try:
+    import aiohttp
+except ImportError:  # pragma: no cover
+    aiohttp = None  # type: ignore
 
 # Steam Deck–friendly install location (survives OS updates with /home)
 OPT_ROOT = Path("/opt/netbird")
@@ -102,28 +113,75 @@ def _linux_arch() -> str:
     return "amd64"
 
 
-def _http_json(url: str, timeout: float = 30.0) -> Any:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/vnd.github+json",
-        },
+def _ssl_context() -> ssl.SSLContext:
+    """Build a verify-enabled SSL context that works under Decky Loader.
+
+    Decky’s bundled Python often fails default CA discovery; prefer certifi
+    (shipped with the loader), then common system CA bundles.
+    """
+    candidates: list[str] = []
+    if certifi is not None:
+        try:
+            candidates.append(certifi.where())
+        except Exception:
+            pass
+    candidates.extend(
+        [
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/ssl/cert.pem",
+            "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        ]
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    for cafile in candidates:
+        if cafile and os.path.isfile(cafile):
+            try:
+                return ssl.create_default_context(cafile=cafile)
+            except Exception:
+                continue
+    return ssl.create_default_context()
 
 
-def _http_download(url: str, dest: Path, timeout: float = 300.0) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(
-        dest, "wb"
-    ) as out:
-        shutil.copyfileobj(resp, out)
+async def _http_get_bytes(url: str, timeout: float = 60.0) -> bytes:
+    """HTTPS GET with Decky-friendly SSL. Prefers aiohttp when available."""
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/vnd.github+json,application/octet-stream,*/*",
+    }
+    if aiohttp is not None:
+        timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+        connector = aiohttp.TCPConnector(ssl=_ssl_context())
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout_cfg,
+            headers=headers,
+        ) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(
+                        f"HTTP {resp.status} for {url}: {body[:200]}"
+                    )
+                return await resp.read()
+
+    def _sync() -> bytes:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=_ssl_context()
+        ) as resp:
+            return resp.read()
+
+    return await asyncio.to_thread(_sync)
 
 
-def _latest_version() -> str:
-    data = _http_json(GITHUB_LATEST)
+async def _http_download(url: str, dest: Path, timeout: float = 300.0) -> None:
+    data = await _http_get_bytes(url, timeout=timeout)
+    dest.write_bytes(data)
+
+
+async def _latest_version() -> str:
+    raw = await _http_get_bytes(GITHUB_LATEST, timeout=30.0)
+    data = json.loads(raw.decode("utf-8"))
     tag = str(data.get("tag_name") or "").lstrip("v")
     if not VERSION_RE.match(tag):
         raise RuntimeError(f"Unexpected release tag: {tag!r}")
@@ -433,7 +491,7 @@ class Plugin:
         latest: Optional[str] = None
         latest_error: Optional[str] = None
         try:
-            latest = await asyncio.to_thread(_latest_version)
+            latest = await _latest_version()
         except Exception as exc:
             latest_error = str(exc)
         return {
@@ -455,7 +513,7 @@ class Plugin:
                 ver = _normalize_version(version)
             else:
                 logs.append("Resolving latest GitHub release…")
-                ver = await asyncio.to_thread(_latest_version)
+                ver = await _latest_version()
             logs.append(f"Installing NetBird v{ver}")
 
             arch = _linux_arch()
@@ -468,9 +526,10 @@ class Plugin:
             OPT_TMP.mkdir(parents=True, exist_ok=True)
 
             archive = OPT_TMP / f"netbird_{ver}_linux_{arch}.tar.gz"
+            await _http_download(url, archive, timeout=300.0)
+            logs.append(f"Downloaded {archive.name} ({archive.stat().st_size} bytes)")
 
-            def _download_and_extract() -> str:
-                _http_download(url, archive)
+            def _extract() -> str:
                 with tarfile.open(archive, "r:gz") as tar:
                     # Find netbird binary member
                     member = None
@@ -500,7 +559,7 @@ class Plugin:
                         staging.replace(OPT_BIN)
                 return str(OPT_BIN)
 
-            binary_path = await asyncio.to_thread(_download_and_extract)
+            binary_path = await asyncio.to_thread(_extract)
             logs.append(f"Installed binary to {binary_path}")
 
             _write_steamos_persist_files()

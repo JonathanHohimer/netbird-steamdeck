@@ -134,6 +134,7 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 | Symptom | What to try |
 |---|---|
 | CLI “Not found” | Use **Install NetBird**; confirm the plugin has root (`plugin.json` flags) |
+| Latest release shows SSL / CERTIFICATE_VERIFY_FAILED | Reinstall plugin ≥1.1.1 — HTTPS uses Decky’s `certifi` CA bundle |
 | Install fails downloading | Deck needs network; check the install log in the plugin |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | SSO does nothing in Game Mode | Copy the shown URL and open it on another device |
