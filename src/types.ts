@@ -37,6 +37,14 @@ export type InstallResult = {
   install?: BinaryInfo;
 };
 
+export type PublicIpResult = {
+  success: boolean;
+  ip?: string | null;
+  stdout?: string;
+  stderr?: string;
+  code?: number;
+};
+
 export type PluginSettings = {
   management_url: string;
 };

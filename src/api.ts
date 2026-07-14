@@ -6,6 +6,7 @@ import type {
   InstallStatus,
   NetworksListResult,
   PluginSettings,
+  PublicIpResult,
   StatusResult,
 } from "./types";
 
@@ -37,6 +38,7 @@ export const netbirdUp = callable<
   CommandResult
 >("up");
 export const netbirdDown = callable<[], CommandResult>("down");
+export const fetchPublicIp = callable<[], PublicIpResult>("fetch_public_ip");
 export const netbirdLogin = callable<
   [
     setup_key?: string,

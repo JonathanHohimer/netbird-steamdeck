@@ -67,9 +67,10 @@ AUTH_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 UNSAFE_TOKEN_RE = re.compile(r"[;&|`$<>\\\n\r]")
 
-# Tokens that look like network IDs / route names in `networks list` output
+# Tokens that look like network IDs / route names in `networks list` output.
+# IDs may contain spaces (e.g. "Home Access"), so capture the rest of the line.
 NETWORK_ID_LINE_RE = re.compile(
-    r"(?:^|\s)(?:[-*]\s*)?(?:ID|Network ID|Route ID)\s*[:=]\s*(\S+)",
+    r"(?:^|\s)(?:[-*]\s*)?(?:ID|Network ID|Route ID)\s*[:=]\s*(.+)$",
     re.IGNORECASE,
 )
 NETWORK_STATUS_RE = re.compile(
@@ -78,7 +79,7 @@ NETWORK_STATUS_RE = re.compile(
 )
 # Fallback: lines like "- route-name (Selected)" or "route-name  Selected"
 NETWORK_SIMPLE_RE = re.compile(
-    r"^[\s*\-]*(?P<id>[A-Za-z0-9_.:/@\-]+)\s*(?:\((?P<paren>[^)]+)\)|\s+(?P<status>Selected|Not\s*Selected))?",
+    r"^[\s*\-]*(?P<id>.+?)\s*(?:\((?P<paren>[^)]+)\)|\s+(?P<status>Selected|Not\s*Selected))\s*$",
     re.IGNORECASE,
 )
 
@@ -433,11 +434,20 @@ def _redact_cmd(cmd: list[str]) -> str:
     return " ".join(redacted)
 
 
+def _strip_wrapping_quotes(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1].strip()
+    return text
+
+
 def _normalize_network_ids(network_ids: Any) -> list[str]:
     """Normalize Decky/frontend network id args into a clean id list.
 
-    Important: a bare string must NOT be iterated (that yields characters).
-    Accepts list/tuple, a single id string, or whitespace/comma-separated ids.
+    A bare string is always treated as a *single* network id (including spaces),
+    which matches `netbird networks select "Home Access"`. Do not split on
+    whitespace — that turns one id into multiple argv tokens.
+    Accepts list/tuple for multiple ids.
     """
     if network_ids is None:
         return ["all"]
@@ -446,28 +456,25 @@ def _normalize_network_ids(network_ids: Any) -> list[str]:
     if isinstance(network_ids, (int, float)):
         return [str(network_ids)]
     if isinstance(network_ids, str):
-        text = network_ids.strip()
-        if not text:
-            return ["all"]
-        if "," in text:
-            parts = [p.strip() for p in text.split(",")]
-        else:
-            parts = text.split()
-        cleaned = [p for p in parts if p]
-        return cleaned or ["all"]
+        text = _strip_wrapping_quotes(network_ids)
+        return [text] if text else ["all"]
     if isinstance(network_ids, (list, tuple)):
         out: list[str] = []
         for item in network_ids:
-            out.extend(_normalize_network_ids(item))
-        # Drop accidental "all" mixed with real ids
+            if isinstance(item, str):
+                text = _strip_wrapping_quotes(item)
+                if text:
+                    out.append(text)
+            else:
+                out.extend(_normalize_network_ids(item))
         out = [x for x in out if x]
         if not out:
             return ["all"]
         if len(out) > 1:
             out = [x for x in out if x.lower() != "all"] or ["all"]
         return out
-    # Unknown shape — stringify once, never iterate
-    text = str(network_ids).strip()
+    # Unknown shape — stringify once, never iterate characters
+    text = _strip_wrapping_quotes(str(network_ids))
     return [text] if text else ["all"]
 
 
@@ -485,7 +492,8 @@ def _parse_networks_list(output: str) -> list[dict[str, Any]]:
         if id_match:
             if current and current.get("id"):
                 networks.append(current)
-            current = {"id": id_match.group(1), "selected": False, "raw": line}
+            nid = _strip_wrapping_quotes(id_match.group(1))
+            current = {"id": nid, "selected": False, "raw": line}
             continue
 
         if current is not None:
@@ -502,7 +510,7 @@ def _parse_networks_list(output: str) -> list[dict[str, Any]]:
         # Simple one-line format
         simple = NETWORK_SIMPLE_RE.match(line)
         if simple and not id_match:
-            nid = simple.group("id")
+            nid = _strip_wrapping_quotes(simple.group("id"))
             if nid.lower() in ("id", "network", "status", "route", "name"):
                 continue
             paren = (simple.group("paren") or "").lower()
@@ -1424,6 +1432,63 @@ class Plugin:
             ["systemctl", "enable", "--now", "netbird.service"], timeout=20.0
         )
 
+    async def fetch_public_ip(self) -> dict[str, Any]:
+        """curl ifconfig.me — useful to verify exit-node / internet egress."""
+        result = await _run_system(
+            [
+                "curl",
+                "-fsS",
+                "--max-time",
+                "10",
+                "-H",
+                "Accept: text/plain",
+                "https://ifconfig.me",
+            ],
+            timeout=15.0,
+        )
+        ip = (result.get("stdout") or "").strip()
+        if result["success"] and ip:
+            return {
+                "success": True,
+                "ip": ip.splitlines()[0].strip(),
+                "stdout": result.get("stdout") or "",
+                "stderr": result.get("stderr") or "",
+                "code": result.get("code", 0),
+            }
+
+        # Fallback if curl is missing — still useful, though may not follow
+        # the same routing path as the system curl binary.
+        try:
+            raw = await _http_get_bytes("https://ifconfig.me", timeout=10.0)
+            ip = raw.decode("utf-8", errors="replace").strip().splitlines()[0].strip()
+            if ip:
+                return {
+                    "success": True,
+                    "ip": ip,
+                    "stdout": ip,
+                    "stderr": (
+                        (result.get("stderr") or "")
+                        + "\n(curl failed; used Python HTTPS fallback)"
+                    ).strip(),
+                    "code": 0,
+                }
+        except Exception as exc:
+            fallback_err = str(exc)
+        else:
+            fallback_err = "empty response"
+
+        return {
+            "success": False,
+            "ip": None,
+            "stdout": result.get("stdout") or "",
+            "stderr": (
+                (result.get("stderr") or "")
+                + (f"\nfallback: {fallback_err}" if fallback_err else "")
+            ).strip()
+            or "Failed to fetch public IP from ifconfig.me",
+            "code": result.get("code", -1),
+        }
+
     async def get_settings(self) -> dict[str, Any]:
         settings = _load_settings()
         return {"management_url": settings.get("management_url", "")}
@@ -1577,27 +1642,28 @@ class Plugin:
             cleaned = merged
 
         result = await self._run(
-            ["networks", "select", *cleaned], timeout=20.0
+            ["networks", "select", *cleaned], timeout=20.0, log_cmd=True
         )
         # Older alias fallback
         if not result["success"] and "unknown command" in (
             result.get("stderr") or ""
         ).lower():
             result = await self._run(
-                ["routes", "select", *cleaned], timeout=20.0
+                ["routes", "select", *cleaned], timeout=20.0, log_cmd=True
             )
         return result
 
     async def networks_deselect(self, network_ids: Any = "all") -> dict[str, Any]:
         cleaned = _normalize_network_ids(network_ids)
+        # Each cleaned entry is one argv (spaces preserved = shell-quoted form).
         result = await self._run(
-            ["networks", "deselect", *cleaned], timeout=20.0
+            ["networks", "deselect", *cleaned], timeout=20.0, log_cmd=True
         )
         if not result["success"] and "unknown command" in (
             result.get("stderr") or ""
         ).lower():
             result = await self._run(
-                ["routes", "deselect", *cleaned], timeout=20.0
+                ["routes", "deselect", *cleaned], timeout=20.0, log_cmd=True
             )
         return result
 

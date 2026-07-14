@@ -3,11 +3,12 @@ import {
   PanelSectionRow,
   ToggleField,
   Field,
+  ButtonItem,
   Navigation,
 } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useCallback, useState } from "react";
-import { netbirdDown, netbirdUp } from "../api";
+import { fetchPublicIp, netbirdDown, netbirdUp } from "../api";
 import type { StatusResult } from "../types";
 
 type Props = {
@@ -68,6 +69,7 @@ export function ConnectionPanel({
   onAuthUrl,
 }: Props) {
   const [localBusy, setLocalBusy] = useState(false);
+  const [publicIp, setPublicIp] = useState<string | null>(null);
   const connected = Boolean(status?.connected);
   const ip = status?.parsed?.netbirdIp || "—";
   const fqdn = status?.parsed?.fqdn || "—";
@@ -134,6 +136,35 @@ export function ConnectionPanel({
     }
   };
 
+  const checkPublicIp = async () => {
+    if (busy || localBusy) return;
+    setWorking(true);
+    try {
+      const result = await fetchPublicIp();
+      if (result.success && result.ip) {
+        setPublicIp(result.ip);
+        toaster.toast({ title: "Public IP", body: result.ip });
+      } else {
+        setPublicIp(null);
+        toaster.toast({
+          title: "Public IP check failed",
+          body: (result.stderr || result.stdout || "Unknown error").slice(
+            0,
+            120
+          ),
+        });
+      }
+    } catch (e) {
+      setPublicIp(null);
+      toaster.toast({
+        title: "Public IP check failed",
+        body: String(e).slice(0, 120),
+      });
+    } finally {
+      setWorking(false);
+    }
+  };
+
   return (
     <PanelSection title="Connection">
       <PanelSectionRow>
@@ -163,6 +194,20 @@ export function ConnectionPanel({
         <Field label="Peers connected" focusable={false}>
           {peerSummary(status)}
         </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Public IP (ifconfig.me)" focusable={false}>
+          {publicIp || "—"}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          disabled={busy || localBusy}
+          onClick={() => void checkPublicIp()}
+        >
+          Test public IP (curl ifconfig.me)
+        </ButtonItem>
       </PanelSectionRow>
     </PanelSection>
   );
