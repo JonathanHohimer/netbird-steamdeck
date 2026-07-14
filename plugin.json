@@ -1,0 +1,11 @@
+{
+  "name": "NetBird",
+  "author": "Jonathan Hohimer",
+  "flags": ["_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["vpn", "netbird", "mesh", "networking"],
+    "description": "Control NetBird from Gaming Mode: connect, disconnect, select networks, view status, and run CLI commands.",
+    "image": "https://opengraph.githubassets.com/1/JonathanHohimer/netbird-steamdeck"
+  }
+}
