@@ -176,7 +176,7 @@ Setup keys are intentionally not stored.
 | `tsconfig.json` | Strict TS compile options for `src/` |
 | `decky.pyi` | Editor/type hints for `import decky` (not shipped as runtime) |
 | `.gitignore` | Ignores `dist/`, `node_modules/`, `out/`, caches |
-| `.github/workflows/build.yml` | Install deps, build, zip plugin, upload artifact; attach zip on tags |
+| `.github/workflows/build.yml` | Build frontend, package `NetBird.zip`, upload folder artifact, publish/update GitHub Release on main |
 
 ---
 

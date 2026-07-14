@@ -33,6 +33,12 @@ OPT_TMP = OPT_ROOT / "tmp"
 PROFILE_D = Path("/etc/profile.d/netbird.sh")
 ATOMIC_UPDATE = Path("/etc/atomic-update.conf.d/netbird.conf")
 SYSTEMD_UNIT = Path("/etc/systemd/system/netbird.service")
+DAEMON_SOCKETS = [
+    Path("/var/run/netbird.sock"),
+    Path("/run/netbird.sock"),
+    Path("/var/run/netbird/netbird.sock"),
+    Path("/run/netbird/netbird.sock"),
+]
 
 GITHUB_LATEST = "https://api.github.com/repos/netbirdio/netbird/releases/latest"
 GITHUB_RELEASE_ASSET = (
@@ -305,14 +311,34 @@ async def _run_system(
         }
 
 
-async def _systemctl_is_active(unit: str = "netbird") -> bool:
+async def _systemctl_is_active(unit: str = "netbird.service") -> bool:
     result = await _run_system(["systemctl", "is-active", unit], timeout=10.0)
-    return (result["stdout"] or "").strip() == "active"
+    state = (result["stdout"] or "").strip()
+    return state == "active"
 
 
-async def _systemctl_is_enabled(unit: str = "netbird") -> bool:
+async def _systemctl_is_enabled(unit: str = "netbird.service") -> bool:
     result = await _run_system(["systemctl", "is-enabled", unit], timeout=10.0)
-    return (result["stdout"] or "").strip() in ("enabled", "enabled-runtime", "static")
+    state = (result["stdout"] or "").strip()
+    return state in ("enabled", "enabled-runtime", "static", "indirect")
+
+
+def _daemon_socket_exists() -> bool:
+    return any(path.exists() for path in DAEMON_SOCKETS)
+
+
+def _daemon_unreachable_text(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        needle in lower
+        for needle in (
+            "failed to connect to daemon",
+            "daemon is not running",
+            "connection refused",
+            "dial unix",
+            "no such file or directory",
+        )
+    )
 
 
 def _extract_auth_url(text: str) -> Optional[str]:
@@ -322,9 +348,21 @@ def _extract_auth_url(text: str) -> Optional[str]:
     for url in matches:
         # Prefer SSO / login style URLs; fall back to first http(s) URL
         lower = url.lower()
-        if any(k in lower for k in ("login", "sso", "auth", "oauth", "netbird")):
-            return url.rstrip(").,]}")
-    return matches[0].rstrip(").,]}") if matches else None
+        if any(
+            k in lower
+            for k in (
+                "login",
+                "sso",
+                "auth",
+                "oauth",
+                "netbird",
+                "authorize",
+                "device",
+                "user_code",
+            )
+        ):
+            return url.rstrip(").,]}'\"")
+    return matches[0].rstrip(").,]}'\"") if matches else None
 
 
 def _redact_cmd(cmd: list[str]) -> str:
@@ -444,31 +482,38 @@ class Plugin:
                 stderr=asyncio.subprocess.PIPE,
                 env=_clean_subprocess_env(),
             )
+            timed_out = False
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
                 )
             except asyncio.TimeoutError:
+                timed_out = True
                 proc.kill()
-                await proc.communicate()
-                return {
-                    "success": False,
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout}s",
-                    "code": -2,
-                    "auth_url": None,
-                }
+                stdout_b, stderr_b = await proc.communicate()
 
             stdout = stdout_b.decode("utf-8", errors="replace")
             stderr = stderr_b.decode("utf-8", errors="replace")
             code = proc.returncode if proc.returncode is not None else -1
             combined = f"{stdout}\n{stderr}"
+            auth_url = _extract_auth_url(combined)
+            if timed_out:
+                return {
+                    "success": False,
+                    "stdout": stdout,
+                    "stderr": (
+                        f"Command timed out after {timeout}s"
+                        + (f"\n{stderr}" if stderr else "")
+                    ),
+                    "code": -2,
+                    "auth_url": auth_url,
+                }
             return {
                 "success": code == 0,
                 "stdout": stdout,
                 "stderr": stderr,
                 "code": code,
-                "auth_url": _extract_auth_url(combined),
+                "auth_url": auth_url,
             }
         except Exception as exc:
             decky.logger.error(f"Command failed: {exc}")
@@ -478,6 +523,121 @@ class Plugin:
                 "stderr": str(exc),
                 "code": -1,
                 "auth_url": None,
+            }
+
+    async def _run_until_auth_url(
+        self,
+        args: list[str],
+        *,
+        url_timeout: float = 45.0,
+        wait_after_url: float = 180.0,
+    ) -> dict[str, Any]:
+        """Run a NetBird command that prints an SSO URL then blocks.
+
+        Returns as soon as a URL is seen (keeping the process alive so the
+        daemon can finish login), or when the process exits / times out.
+        """
+        binary = _resolve_binary()
+        if not binary:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "netbird binary not found. Use Install in the plugin first.",
+                "code": -1,
+                "auth_url": None,
+            }
+
+        cmd = [binary, *args]
+        decky.logger.info(f"Running (SSO wait): {_redact_cmd(cmd)}")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_clean_subprocess_env(),
+        )
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        auth_url: Optional[str] = None
+        deadline = asyncio.get_running_loop().time() + url_timeout
+
+        async def _pump(stream, bucket: list[str]) -> None:
+            nonlocal auth_url
+            assert stream is not None
+            while True:
+                line_b = await stream.readline()
+                if not line_b:
+                    break
+                line = line_b.decode("utf-8", errors="replace")
+                bucket.append(line)
+                if auth_url is None:
+                    found = _extract_auth_url(line)
+                    if found:
+                        auth_url = found
+
+        pump_out = asyncio.create_task(_pump(proc.stdout, stdout_parts))
+        pump_err = asyncio.create_task(_pump(proc.stderr, stderr_parts))
+
+        try:
+            while auth_url is None and proc.returncode is None:
+                if asyncio.get_running_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.15)
+
+            stdout = "".join(stdout_parts)
+            stderr = "".join(stderr_parts)
+            if auth_url is None:
+                auth_url = _extract_auth_url(f"{stdout}\n{stderr}")
+
+            if auth_url and proc.returncode is None:
+                # Keep waiting for login completion in the background.
+                async def _finish_wait() -> None:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=wait_after_url)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                    finally:
+                        await asyncio.gather(pump_out, pump_err, return_exceptions=True)
+
+                asyncio.create_task(_finish_wait())
+                return {
+                    "success": False,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "code": 0,
+                    "auth_url": auth_url,
+                    "pending_sso": True,
+                }
+
+            await asyncio.gather(pump_out, pump_err, return_exceptions=True)
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            code = proc.returncode if proc.returncode is not None else -1
+            return {
+                "success": code == 0,
+                "stdout": "".join(stdout_parts),
+                "stderr": "".join(stderr_parts),
+                "code": code,
+                "auth_url": auth_url,
+                "pending_sso": False,
+            }
+        except Exception as exc:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            decky.logger.error(f"SSO command failed: {exc}")
+            return {
+                "success": False,
+                "stdout": "".join(stdout_parts),
+                "stderr": str(exc),
+                "code": -1,
+                "auth_url": auth_url,
+                "pending_sso": False,
             }
 
     def _auth_flags(
@@ -503,20 +663,39 @@ class Plugin:
         binary = _resolve_binary()
         managed = OPT_BIN.is_file()
         is_root = os.geteuid() == 0
-        service_active = await _systemctl_is_active() if (
-            managed or SYSTEMD_UNIT.is_file() or binary
-        ) else False
-        service_enabled = await _systemctl_is_enabled() if (
-            managed or SYSTEMD_UNIT.is_file()
-        ) else False
+        unit_present = SYSTEMD_UNIT.is_file()
+        service_active = await _systemctl_is_active("netbird.service")
+        if not service_active:
+            service_active = await _systemctl_is_active("netbird")
+        service_enabled = await _systemctl_is_enabled("netbird.service")
+        if not service_enabled:
+            service_enabled = await _systemctl_is_enabled("netbird")
+
+        # Daemon may be running even if systemctl reporting is flaky from Decky
+        daemon_socket = _daemon_socket_exists()
+        daemon_reachable = False
+        if binary:
+            status_probe = await self._run(["status"], timeout=8.0)
+            probe_text = f"{status_probe['stdout']}\n{status_probe['stderr']}"
+            daemon_reachable = not _daemon_unreachable_text(probe_text) and bool(
+                (status_probe["stdout"] or status_probe["stderr"] or "").strip()
+            )
+
+        # Treat daemon reply / socket as "service active" for UI purposes
+        if daemon_reachable or daemon_socket:
+            service_active = True
+
         if not binary:
             return {
                 "found": False,
                 "path": None,
                 "version": None,
                 "managed": False,
-                "service_active": False,
-                "service_enabled": False,
+                "service_active": service_active,
+                "service_enabled": service_enabled,
+                "unit_present": unit_present,
+                "daemon_socket": daemon_socket,
+                "daemon_reachable": daemon_reachable,
                 "opt_path": str(OPT_BIN),
                 "is_root": is_root,
                 "uid": os.geteuid(),
@@ -530,6 +709,9 @@ class Plugin:
             "managed": managed,
             "service_active": service_active,
             "service_enabled": service_enabled,
+            "unit_present": unit_present,
+            "daemon_socket": daemon_socket,
+            "daemon_reachable": daemon_reachable,
             "opt_path": str(OPT_BIN),
             "is_root": is_root,
             "uid": os.geteuid(),
@@ -671,7 +853,11 @@ class Plugin:
                 f"{(install['stdout'] or '').strip()}\n"
                 f"{(install['stderr'] or '').strip()}".strip()
             )
-            if not install["success"]:
+
+            # NetBird may return non-zero even when the unit lands; continue if present.
+            await _run_system(["systemctl", "daemon-reload"], timeout=30.0)
+            unit_ok = SYSTEMD_UNIT.is_file()
+            if not install["success"] and not unit_ok:
                 return _finish(
                     success=False,
                     version=ver,
@@ -679,43 +865,66 @@ class Plugin:
                     message="\n".join(logs),
                     stderr=install["stderr"]
                     or install["stdout"]
-                    or "service install failed",
+                    or "service install failed and no unit file was created",
+                )
+            if not install["success"] and unit_ok:
+                logs.append(
+                    f"service install reported failure, but {SYSTEMD_UNIT} exists — continuing"
                 )
 
-            # Ensure enabled on boot (some installs only start once)
+            # Force enable + start via systemctl (more reliable than service helpers on Deck)
             enable = await _run_system(
-                ["systemctl", "enable", "netbird.service"], timeout=30.0
+                ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
             )
             logs.append(
-                f"systemctl enable: exit {enable['code']}\n"
+                f"systemctl enable --now: exit {enable['code']}\n"
                 f"{(enable['stdout'] or '').strip()}\n"
                 f"{(enable['stderr'] or '').strip()}".strip()
             )
-
-            start = await _run_system(
-                [str(OPT_BIN), "service", "start"], timeout=60.0
-            )
-            if not start["success"]:
-                # Fallback to systemctl
+            if not enable["success"]:
+                # Retry as separate steps
+                enable_only = await _run_system(
+                    ["systemctl", "enable", "netbird.service"], timeout=30.0
+                )
+                logs.append(
+                    f"systemctl enable: exit {enable_only['code']}\n"
+                    f"{(enable_only['stdout'] or enable_only['stderr'] or '').strip()}"
+                )
                 start = await _run_system(
                     ["systemctl", "start", "netbird.service"], timeout=60.0
                 )
-            logs.append(
-                f"service start: exit {start['code']}\n"
-                f"{(start['stdout'] or '').strip()}\n"
-                f"{(start['stderr'] or '').strip()}".strip()
-            )
+                if not start["success"]:
+                    start = await _run_system(
+                        [str(OPT_BIN), "service", "start"], timeout=60.0
+                    )
+                logs.append(
+                    f"service start: exit {start['code']}\n"
+                    f"{(start['stdout'] or '').strip()}\n"
+                    f"{(start['stderr'] or '').strip()}".strip()
+                )
+            else:
+                start = enable
 
             # Cleanup download temp
             shutil.rmtree(OPT_TMP, ignore_errors=True)
 
+            # Brief settle time for the socket to appear
+            await asyncio.sleep(1.0)
             info = await self.get_binary_info()
+            ok = bool(
+                start.get("success")
+                or info.get("service_active")
+                or info.get("daemon_reachable")
+                or SYSTEMD_UNIT.is_file()
+            )
             return _finish(
-                success=bool(start["success"] or info.get("service_active")),
+                success=ok,
                 version=ver,
                 path=binary_path,
                 message="\n".join(logs),
-                stderr="" if start["success"] else (start["stderr"] or start["stdout"] or ""),
+                stderr=""
+                if ok
+                else (start.get("stderr") or start.get("stdout") or enable.get("stderr") or ""),
                 install=info,
             )
         except urllib.error.HTTPError as exc:
@@ -795,14 +1004,21 @@ class Plugin:
             }
 
     async def service_start(self) -> dict[str, Any]:
+        await _run_system(["systemctl", "daemon-reload"], timeout=20.0)
+        enable = await _run_system(
+            ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
+        )
+        if enable["success"]:
+            return enable
         binary = _resolve_binary()
         if binary:
             result = await self._run(["service", "start"], timeout=60.0)
             if result["success"]:
                 return result
-        return await _run_system(
+        start = await _run_system(
             ["systemctl", "start", "netbird.service"], timeout=60.0
         )
+        return start
 
     async def service_stop(self) -> dict[str, Any]:
         binary = _resolve_binary()
@@ -812,6 +1028,12 @@ class Plugin:
                 return result
         return await _run_system(
             ["systemctl", "stop", "netbird.service"], timeout=60.0
+        )
+
+    async def service_enable(self) -> dict[str, Any]:
+        await _run_system(["systemctl", "daemon-reload"], timeout=20.0)
+        return await _run_system(
+            ["systemctl", "enable", "--now", "netbird.service"], timeout=60.0
         )
 
     async def get_settings(self) -> dict[str, Any]:
@@ -876,11 +1098,14 @@ class Plugin:
         management_url: str = "",
         no_browser: bool = True,
     ) -> dict[str, Any]:
+        use_no_browser = no_browser and not (setup_key or "").strip()
         flags = self._auth_flags(
             management_url=management_url,
             setup_key=setup_key,
-            no_browser=no_browser and not (setup_key or "").strip(),
+            no_browser=use_no_browser,
         )
+        if use_no_browser:
+            return await self._run_until_auth_url(["up", *flags])
         return await self._run(["up", *flags], timeout=120.0, log_cmd=True)
 
     async def down(self) -> dict[str, Any]:
@@ -899,6 +1124,13 @@ class Plugin:
             setup_key=setup_key,
             no_browser=use_no_browser,
         )
+        if use_no_browser:
+            # Prefer `up` so we connect after SSO; stream until URL appears
+            result = await self._run_until_auth_url(["up", *flags])
+            if result.get("auth_url"):
+                return result
+            # Fallback to login verb
+            return await self._run_until_auth_url(["login", *flags])
         return await self._run(["login", *flags], timeout=120.0, log_cmd=True)
 
     async def logout(self) -> dict[str, Any]:

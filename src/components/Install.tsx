@@ -144,16 +144,19 @@ export function InstallPanel({
       if (result.success) {
         toaster.toast({
           title: "NetBird",
-          body: action === "start" ? "Service started" : "Service stopped",
+          body:
+            action === "start"
+              ? "Service enabled and started"
+              : "Service stopped",
         });
       } else {
         toaster.toast({
           title: `Service ${action} failed`,
-          body: (result.stderr || result.stdout || "Unknown error").slice(
-            0,
-            120
-          ),
+          body: "See Install log / retry Enable & start service",
         });
+        setLog(
+          [result.stdout, result.stderr].filter(Boolean).join("\n\n") || log
+        );
       }
     });
 
@@ -204,8 +207,9 @@ export function InstallPanel({
       </PanelSectionRow>
       <PanelSectionRow>
         <Field label="Service" focusable={false}>
-          {serviceActive ? "Active" : "Inactive"}
-          {enabledOnBoot ? " · enabled on boot" : ""}
+          {serviceActive ? "Active/reachable" : "Inactive"}
+          {enabledOnBoot ? " · enabled on boot" : " · not enabled"}
+          {status?.unit_present || binary?.unit_present ? " · unit present" : ""}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
@@ -228,7 +232,7 @@ export function InstallPanel({
           disabled={busy || !installed}
           onClick={() => void doService(serviceActive ? "stop" : "start")}
         >
-          {serviceActive ? "Stop service" : "Start service"}
+          {serviceActive ? "Stop service" : "Enable & start service"}
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>

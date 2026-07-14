@@ -4,6 +4,7 @@ import {
   TextField,
   ButtonItem,
   Field,
+  Navigation,
 } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useState } from "react";
@@ -38,6 +39,16 @@ async function copyText(text: string): Promise<boolean> {
   return false;
 }
 
+function openSsoUrl(url: string) {
+  try {
+    Navigation.NavigateToExternalWeb(url);
+    return true;
+  } catch (e) {
+    console.error("NavigateToExternalWeb failed", e);
+    return false;
+  }
+}
+
 export function AuthPanel({
   managementUrl,
   setManagementUrlState,
@@ -50,6 +61,7 @@ export function AuthPanel({
   onRefresh,
 }: Props) {
   const [savingUrl, setSavingUrl] = useState(false);
+  const [ssoLog, setSsoLog] = useState("");
 
   const saveUrl = async () => {
     setSavingUrl(true);
@@ -103,20 +115,24 @@ export function AuthPanel({
   const ssoLogin = () =>
     withBusy(async () => {
       const result = await netbirdLogin("", managementUrl.trim(), true);
+      const combined = [result.stdout, result.stderr].filter(Boolean).join("\n");
+      setSsoLog(combined);
       if (result.auth_url) {
         setAuthUrl(result.auth_url);
+        const opened = openSsoUrl(result.auth_url);
         toaster.toast({
           title: "SSO login",
-          body: "Open or copy the URL below to authenticate.",
+          body: opened
+            ? "Opened Steam browser — finish login there (or use Copy URL)."
+            : "Copy the URL below and open it on a phone/PC to finish login.",
         });
-      }
-      if (result.success) {
+      } else if (result.success) {
         toaster.toast({ title: "NetBird", body: "Login succeeded" });
         setAuthUrl(null);
-      } else if (!result.auth_url) {
+      } else {
         toaster.toast({
-          title: "Login failed",
-          body: (result.stderr || result.stdout || "Unknown error").slice(0, 120),
+          title: "SSO login — no URL yet",
+          body: "See SSO output below. Ensure the service is running, then retry.",
         });
       }
     });
@@ -178,17 +194,32 @@ export function AuthPanel({
       {authUrl ? (
         <>
           <PanelSectionRow>
-            <Field label="SSO URL" focusable={false}>
+            <Field label="SSO URL" focusable={true}>
               <div
                 style={{
                   wordBreak: "break-all",
                   fontSize: "12px",
                   lineHeight: "1.3",
+                  userSelect: "text",
                 }}
               >
                 {authUrl}
               </div>
             </Field>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => {
+                const ok = openSsoUrl(authUrl);
+                toaster.toast({
+                  title: "NetBird",
+                  body: ok ? "Opened in Steam browser" : "Could not open browser",
+                });
+              }}
+            >
+              Open SSO URL
+            </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem
@@ -205,6 +236,25 @@ export function AuthPanel({
             </ButtonItem>
           </PanelSectionRow>
         </>
+      ) : null}
+      {ssoLog ? (
+        <PanelSectionRow>
+          <Field label="SSO output" focusable={true}>
+            <pre
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontSize: "11px",
+                margin: 0,
+                maxHeight: "200px",
+                overflow: "auto",
+                userSelect: "text",
+              }}
+            >
+              {ssoLog}
+            </pre>
+          </Field>
+        </PanelSectionRow>
       ) : null}
     </PanelSection>
   );

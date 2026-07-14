@@ -18,6 +18,7 @@ export const updateNetbird = callable<[], InstallResult>("update_netbird");
 export const uninstallNetbird = callable<[], InstallResult>("uninstall_netbird");
 export const serviceStart = callable<[], CommandResult>("service_start");
 export const serviceStop = callable<[], CommandResult>("service_stop");
+export const serviceEnable = callable<[], CommandResult>("service_enable");
 export const getSettings = callable<[], PluginSettings>("get_settings");
 export const setManagementUrl = callable<[url: string], PluginSettings>(
   "set_management_url"

@@ -28,9 +28,24 @@ You do **not** need a separate NetBird install first.
 
 ### From a release zip
 
-1. Download `NetBird.zip` from Releases (or build locally — see below)
-2. Gaming Mode → Decky → store gear → **Developer** → **Install plugin from ZIP**
-3. Or unzip and copy the `NetBird/` folder to `~/homebrew/plugins/NetBird`
+1. Open [Releases](https://github.com/JonathanHohimer/netbird-steamdeck/releases) and download **NetBird.zip**
+2. In Gaming Mode: Decky → store gear → **Developer** → **Install plugin from ZIP**
+3. Or unzip (you should see a single `NetBird/` folder) and copy it to `~/homebrew/plugins/NetBird`
+
+CI builds `NetBird.zip` with this layout (not a zip nested inside another zip):
+
+```text
+NetBird.zip
+└── NetBird/
+    ├── dist/index.js
+    ├── main.py
+    ├── plugin.json
+    ├── package.json
+    ├── README.md
+    └── LICENSE
+```
+
+Each push to `main` publishes/updates a GitHub Release tagged from `package.json` (e.g. `v1.1.4`) with that zip attached.
 
 ### Build from source
 
@@ -138,6 +153,8 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 | Permission denied `/opt/netbird` | `plugin.json` must use `"flags": ["root"]` (not `_root`). Reinstall the zip and restart Decky |
 | Plugin privileges shows NOT root | Same as above — Decky only elevates for the exact flag `root` |
 | `libcrypto.so.3` / OPENSSL errors during service install | Fixed in ≥1.1.3 by clearing Decky’s `LD_LIBRARY_PATH` for child processes — reinstall the plugin zip |
+| Unit present but disabled / service not detected | Use **Enable & start service**; ≥1.1.4 also treats a reachable daemon socket as active |
+| SSO does nothing in Game Mode | ≥1.1.4 streams the login URL, opens Steam’s browser when possible, and shows **Copy SSO URL** — finish login there |
 | Install fails downloading | Deck needs network; check the **Install log** section (and Copy install log) |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | SSO does nothing in Game Mode | Copy the shown URL and open it on another device |

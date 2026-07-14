@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,21 +30,48 @@ jobs:
           pnpm install --frozen-lockfile=false
           pnpm run build
 
+      - name: Read version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Plugin version: $VERSION"
+
       - name: Package plugin zip
         run: |
-          mkdir -p NetBird/dist
-          cp dist/index.js NetBird/dist/
-          cp main.py plugin.json package.json README.md LICENSE NetBird/
-          zip -r NetBird.zip NetBird
+          # Stage exactly what Decky expects: NetBird/{dist,main.py,...}
+          rm -rf .pack
+          mkdir -p .pack/NetBird/dist
+          cp dist/index.js .pack/NetBird/dist/
+          cp main.py plugin.json package.json README.md LICENSE .pack/NetBird/
 
-      - name: Upload artifact
+          # Produce a single-level zip: NetBird/... (not a zip-in-zip)
+          rm -f NetBird.zip
+          (cd .pack && zip -r ../NetBird.zip NetBird)
+
+          echo "Zip contents:"
+          unzip -l NetBird.zip
+
+      - name: Upload plugin folder artifact
+        # Upload the folder (not a .zip) so GitHub's artifact download
+        # unwraps once into NetBird/, avoiding a nested zip.
         uses: actions/upload-artifact@v4
         with:
           name: NetBird
-          path: NetBird.zip
+          path: .pack/NetBird
 
-      - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create or update GitHub Release
+        # Release on main pushes and version tags so assets are on the Releases page.
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: NetBird v${{ steps.version.outputs.version }}
           files: NetBird.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: true
+          # Same package.json version → refresh NetBird.zip on the existing release
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

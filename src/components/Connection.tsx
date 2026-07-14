@@ -3,6 +3,7 @@ import {
   PanelSectionRow,
   ToggleField,
   Field,
+  Navigation,
 } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useCallback, useState } from "react";
@@ -91,9 +92,14 @@ export function ConnectionPanel({
         );
         if (result.auth_url) {
           onAuthUrl(result.auth_url);
+          try {
+            Navigation.NavigateToExternalWeb(result.auth_url);
+          } catch (e) {
+            console.error(e);
+          }
           toaster.toast({
             title: "NetBird SSO",
-            body: "Open the login URL shown below to finish authentication.",
+            body: "Finish login in the browser (URL also under Authentication).",
           });
         }
         if (result.success) {

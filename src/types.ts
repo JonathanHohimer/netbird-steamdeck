@@ -13,6 +13,9 @@ export type BinaryInfo = {
   managed?: boolean;
   service_active?: boolean;
   service_enabled?: boolean;
+  unit_present?: boolean;
+  daemon_socket?: boolean;
+  daemon_reachable?: boolean;
   opt_path?: string;
   is_root?: boolean;
   uid?: number;
