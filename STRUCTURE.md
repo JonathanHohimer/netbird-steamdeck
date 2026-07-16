@@ -10,17 +10,18 @@ netbird-steamdeck/
 ├── .github/workflows/build.yml   # CI: pnpm build + NetBird.zip artifact/release
 ├── assets/                       # Static assets (logo, etc.)
 ├── src/                          # Frontend TypeScript sources
-│   ├── index.tsx                 # Plugin entry (definePlugin + panel layout)
+│   ├── index.tsx                 # Plugin entry, view routing, shared state
 │   ├── api.ts                    # Typed callable() wrappers → Python methods
 │   ├── types.ts                  # Shared TS types for API payloads
 │   ├── types.d.ts                # Module shims for image imports
 │   └── components/               # UI sections
-│       ├── Install.tsx           # Install / update / uninstall / service
-│       ├── Connection.tsx        # Up/down + summary fields
-│       ├── Auth.tsx              # Management URL, setup key, SSO
+│       ├── Install.tsx           # Service management: install / service / wipe state
+│       ├── Connection.tsx        # Up/down + summary + public IP
+│       ├── Auth.tsx              # Setup key, SSO (QR/URL), logout
 │       ├── Networks.tsx          # Network list toggles
-│       ├── Status.tsx            # Detailed status / peers / raw detail
-│       └── CliRunner.tsx         # Raw netbird argument runner
+│       ├── Advanced.tsx          # Management URL, status detail, install log, CLI
+│       ├── CliRunner.tsx         # Raw netbird argument runner (used by Advanced)
+│       └── statusHelpers.ts      # Shared status parsing / formatting helpers
 ├── main.py                       # Python backend (all Decky RPC methods)
 ├── decky.pyi                     # Type stubs for the decky Python module
 ├── plugin.json                   # Decky plugin metadata + flags
@@ -71,9 +72,11 @@ When installed on the Deck, Decky expects approximately:
 ### `index.tsx`
 
 - Calls `definePlugin()` from `@decky/api`
-- Renders the side-menu content: header + all panel sections
-- Owns shared state: binary info, connection status, management URL, setup key, SSO URL, busy flag
+- Routes three views: `"main"` | `"service"` | `"advanced"` (Back returns to main)
+- Owns shared state: binary info, connection status, management URL, setup key, SSO URL, busy flag, networks refresh token
 - Polls `status` every few seconds while the panel is open
+- When `binary != null && !binary.found`, shows a not-installed banner and passes `controlsDisabled` into Connection / Auth / Networks
+- Service management and Advanced remain reachable from **More** even when not installed
 
 ### `api.ts`
 
@@ -82,18 +85,19 @@ Example: `installNetbird("")` → Python `Plugin.install_netbird(version="")`.
 
 ### `types.ts`
 
-Shared shapes for command results, install status, parsed NetBird `--json` status, networks, etc.
+Shared shapes for command results, install status, parsed NetBird `--json` status, networks, public IP, etc.
 
 ### Components
 
 | Component | Backend methods used | Responsibility |
 |---|---|---|
-| `Install.tsx` | `get_install_status`, `install_netbird`, `update_netbird`, `uninstall_netbird`, `service_start`, `service_stop` | Steam Deck managed lifecycle |
-| `Connection.tsx` | `up`, `down`, status props | Connect toggle + IP/FQDN/peers summary |
-| `Auth.tsx` | `set_management_url`, `up`, `login`, `logout` | Auth settings + SSO URL copy |
+| `Install.tsx` | `get_install_status`, `install_netbird`, `update_netbird`, `uninstall_netbird`, `service_start`, `service_stop`, `service_enable`, `clear_netbird_state` | Service management sub-view |
+| `Connection.tsx` | `up`, `down`, `fetch_public_ip`, status props | Connect toggle + IP/FQDN/peers + public IP test |
+| `Auth.tsx` | `up`, `login`, `logout` | Setup key / SSO (QR via `--qr`) / logout |
 | `Networks.tsx` | `networks_list`, `networks_select`, `networks_deselect` | Per-network toggles and select-all |
-| `Status.tsx` | status props / refresh | Peers table + raw detail |
+| `Advanced.tsx` | `set_management_url`, status props, install log, embeds `CliRunner` | Advanced sub-view |
 | `CliRunner.tsx` | `run_command` | Escape hatch for other CLI verbs |
+| `statusHelpers.ts` | — | Peer/latency/management URL helpers shared by Connection + Advanced |
 
 UI primitives come from `@decky/ui` (`PanelSection`, `ToggleField`, `ButtonItem`, `TextField`, `Field`). Toasts come from `@decky/api`.
 
@@ -126,7 +130,9 @@ Order of preference:
 | `install_netbird` | Download release tarball → `/opt/netbird/bin`, write persist files, `service install` + `enable` + `start` |
 | `update_netbird` | Same as install with latest version |
 | `uninstall_netbird` | `down` / `service uninstall`, remove `/opt/netbird` + profile/atomic files + unit |
-| `service_start` / `service_stop` | Prefer `netbird service …`, fall back to `systemctl` |
+| `clear_netbird_state` | Stop service and clear `/var/lib/netbird` (re-auth required) |
+| `service_start` / `service_stop` / `service_enable` | Prefer `netbird service …`, fall back to `systemctl` |
+| `fetch_public_ip` | `curl ifconfig.me` (egress check) |
 
 Managed host files written by install:
 
@@ -141,8 +147,8 @@ Managed host files written by install:
 |---|---|
 | `status` | `status --json` (+ optional `--detail`) |
 | `up` / `down` | `up` / `down` |
-| `login` / `logout` | `login` / `logout` |
-| `networks_list` | `networks list` (parse human output) |
+| `login` / `logout` | `login` / `logout` (SSO may use PTY + `--qr`) |
+| `networks_list` | `networks list` (parse human output; preserves spaced IDs) |
 | `networks_select` / `networks_deselect` | `networks select[-a]` / `deselect` |
 | `run_command` | Arbitrary argv after `netbird` (no shell; blocks metacharacters) |
 | `get_settings` / `set_management_url` | JSON settings under Decky settings dir |
@@ -151,8 +157,9 @@ Helpers of note:
 
 - `_redact_cmd` — hides setup keys in logs
 - `_extract_auth_url` — pulls SSO URLs from CLI output for Gaming Mode
+- `_run_until_auth_url` / `_run_until_auth_url_pty` — stream SSO / QR without blocking the UI forever
 - `_parse_networks_list` — best-effort parse of `networks list` text
-- `_http_json` / `_http_download` — GitHub release fetch (stdlib `urllib`)
+- `_http_json` / `_http_download` — GitHub release fetch (stdlib `urllib`, Decky `certifi` when available)
 
 ### Settings storage
 
@@ -183,17 +190,24 @@ Setup keys are intentionally not stored.
 ## Data flow
 
 ```text
+User opens plugin (CLI missing)
+    → index.tsx shows not-installed banner
+    → Connection / Auth / Networks receive controlsDisabled
+    → User opens Service management → Install.tsx → install_netbird()
+    → binary.found becomes true; banner clears; controls enable
+
 User taps Install
     → Install.tsx calls installNetbird()
     → Decky RPC → main.py install_netbird()
     → GitHub Releases download
     → write /opt/netbird + persist files
     → netbird service install/enable/start
-    → frontend refreshes get_install_status / status
+    → frontend refreshes get_binary_info / get_install_status / status
 
 User toggles Connected
     → Connection.tsx → up()/down()
     → netbird up|down (optional --setup-key / --management-url / --no-browser)
+    → on connect: refresh networks + clear SSO UI
     → status poll updates UI
 ```
 
@@ -202,7 +216,7 @@ User toggles Connected
 ## Extending the plugin
 
 1. **New backend capability** — add an `async def` on `Plugin` in `main.py`, then wrap it in `src/api.ts`.
-2. **New UI section** — add a component under `src/components/` and mount it from `src/index.tsx`.
+2. **New UI section** — add a component under `src/components/` and mount it from `src/index.tsx` (main view or a sub-view).
 3. **Rebuild** — `pnpm run build`, then reinstall/reload the plugin zip on the Deck.
 
 Keep CLI invocations as argv lists (never `shell=True`). Prefer `/opt/netbird/bin/netbird` for Deck-managed installs.

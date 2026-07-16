@@ -9,13 +9,15 @@ For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 ## Features
 
 - **Install / update / uninstall** NetBird under `/opt/netbird`
-- Start / stop the NetBird systemd service
+- Start / stop / enable the NetBird systemd service
 - Connect / disconnect (`netbird up` / `netbird down`)
-- Setup-key login and SSO login (SSO uses `--no-browser` and shows a copyable URL)
-- Custom management URL for self-hosted NetBird
+- Setup-key login and SSO login (SSO uses `--no-browser` / `--qr`, copyable URL, optional QR)
+- Custom management URL for self-hosted NetBird (edited under Advanced)
 - Network select / deselect / select-all
+- Public IP check via `curl ifconfig.me`
 - Detailed status from `netbird status --json` (peers, management, signal, relays)
-- Advanced panel to run remaining `netbird …` CLI commands
+- Advanced panel for remaining `netbird …` CLI commands, install log, and clearing `/var/lib/netbird`
+- When NetBird is not installed: banner on the main view with a shortcut to Service management; Connection / Auth / Networks controls stay disabled
 
 ## Prerequisites
 
@@ -45,7 +47,7 @@ NetBird.zip
     └── LICENSE
 ```
 
-Each push to `main` publishes/updates a GitHub Release tagged from `package.json` (e.g. `v1.1.4`) with that zip attached.
+Each push to `main` publishes/updates a GitHub Release tagged from `package.json` (e.g. `v1.1.13`) with that zip attached.
 
 ### Build from source
 
@@ -80,25 +82,29 @@ CI builds this zip on push/tags via [`.github/workflows/build.yml`](.github/work
 ## First-time NetBird setup on Deck
 
 1. Open Decky → **NetBird**
-2. **Install (Steam Deck)** → **Install NetBird**  
+2. If you see **NetBird isn’t installed yet**, tap **Open Service management →** (or **More → Service management →**)
+3. **Install NetBird**  
    Downloads the latest GitHub `linux_amd64` release into `/opt/netbird`, installs the service, and enables it on boot
-3. Authenticate:
+4. Go **← Back** to the main view
+5. Authenticate:
    - **Setup key:** paste key → **Connect with setup key**, or
-   - **SSO login:** tap SSO → copy the URL → open it in a browser (phone or Desktop Mode) → finish auth
-4. Optionally set a self-hosted **Management URL** and save it
-5. Toggle **Connected** to bring the mesh up or down
+   - **SSO login:** tap SSO → open/copy the URL or scan the QR → finish auth on another device
+6. Optionally set a self-hosted **Management URL** under **Advanced →** and save it
+7. Toggle **Connected** to bring the mesh up or down
 
 ## UI map
 
-| Section | Purpose |
+| View / section | Purpose |
 |---|---|
-| NetBird / CLI | Shows resolved binary path and version |
-| Install (Steam Deck) | Install, update, uninstall, start/stop service |
-| Connection | Up/down toggle, IP, FQDN, peer counts |
-| Authentication | Management URL, setup key, SSO URL, logout |
-| Networks | List and toggle selected networks |
-| Status detail | Structured status + raw detail text |
-| Advanced / CLI | Run arbitrary `netbird` args (no shell) |
+| **Not-installed banner** | Shown when the CLI is missing; opens Service management |
+| **Connection** | Up/down toggle, NetBird IP / FQDN / peers, optional management URL (read-only if non-default), public IP test |
+| **NetBird / CLI** | Resolved binary path and version (or “Checking…” / not found) |
+| **Authentication** | Setup key, SSO (QR / URL / open / copy), logout |
+| **Networks** | List and toggle selected networks; select/deselect all |
+| **More → Service management** | Install, update, uninstall, start/stop/enable service, wipe `/var/lib/netbird` |
+| **More → Advanced** | Management URL editor, status detail / raw, install log, raw CLI runner |
+
+Service management and Advanced are sub-views with **← Back** to main. They stay available even when NetBird is not installed.
 
 ## What the managed install writes
 
@@ -148,23 +154,27 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 
 | Symptom | What to try |
 |---|---|
-| CLI “Not found” | Use **Install NetBird**; confirm the plugin has root (`plugin.json` flags) |
+| Banner / CLI “Not found” | Open **Service management** → **Install NetBird**; confirm the plugin has root (`plugin.json` flags) |
 | Latest release shows SSL / CERTIFICATE_VERIFY_FAILED | Reinstall plugin ≥1.1.1 — HTTPS uses Decky’s `certifi` CA bundle |
 | Permission denied `/opt/netbird` | `plugin.json` must use `"flags": ["root"]` (not `_root`). Reinstall the zip and restart Decky |
 | Plugin privileges shows NOT root | Same as above — Decky only elevates for the exact flag `root` |
 | `libcrypto.so.3` / OPENSSL errors during service install | Fixed in ≥1.1.3 by clearing Decky’s `LD_LIBRARY_PATH` for child processes — reinstall the plugin zip |
 | Unit present but disabled / service not detected | Use **Enable & start service**; ≥1.1.4 also treats a reachable daemon socket as active |
-| SSO does nothing in Game Mode | ≥1.1.4 streams the login URL; enable **Show QR for SSO** (uses `netbird --qr`) to scan from a phone, or **Copy SSO URL** |
-| Install fails downloading | Deck needs network; check the **Install log** section (and Copy install log) |
+| SSO does nothing in Game Mode | Enable **Show QR for SSO** (uses `netbird --qr`) to scan from a phone, or **Open** / **Copy SSO URL** |
+| Install fails downloading | Deck needs network; check the **Install log** under Advanced (and Copy install log) |
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
-| SSO does nothing in Game Mode | Copy the shown URL and open it on another device |
 | Status empty | Service must be running; use **Start service** then refresh |
+| Stuck / wrong peer identity after reinstall | Service management → clear `/var/lib/netbird`, then re-authenticate |
 
 ## Security notes
 
 - The backend runs as root so it can manage `/opt` and systemd
 - Setup keys are passed as CLI args and not written to plugin settings; they are redacted from plugin logs
 - The Advanced CLI runner rejects shell metacharacters and never invokes a shell
+
+## AI assistance
+
+This project was created in whole or in part with the assistance of AI (Cursor). Human review and testing remain the author’s responsibility.
 
 ## License
 
