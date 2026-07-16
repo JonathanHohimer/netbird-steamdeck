@@ -8,7 +8,7 @@ import {
   ToggleField,
 } from "@decky/ui";
 import { toaster } from "@decky/api";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { netbirdLogin, netbirdLogout, netbirdUp } from "../api";
 
 type Props = {
@@ -58,6 +58,13 @@ export function AuthPanel({
 }: Props) {
   const [ssoLog, setSsoLog] = useState("");
   const [showQr, setShowQr] = useState(true);
+
+  useEffect(() => {
+    if (connected) {
+      setSsoLog("");
+      setAuthUrl(null);
+    }
+  }, [connected, setAuthUrl]);
 
   const withBusy = async (fn: () => Promise<void>) => {
     if (busy) return;
@@ -182,7 +189,7 @@ export function AuthPanel({
           Logout
         </ButtonItem>
       </PanelSectionRow>
-      {authUrl ? (
+      {authUrl && !connected ? (
         <>
           <PanelSectionRow>
             <Field label="SSO URL" focusable={true}>
@@ -228,7 +235,7 @@ export function AuthPanel({
           </PanelSectionRow>
         </>
       ) : null}
-      {ssoLog ? (
+      {ssoLog && !connected ? (
         <PanelSectionRow>
           <div
             style={{

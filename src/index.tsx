@@ -1,6 +1,6 @@
 import { PanelSection, PanelSectionRow, Field, ButtonItem, staticClasses } from "@decky/ui";
 import { definePlugin } from "@decky/api";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FaNetworkWired } from "react-icons/fa";
 import { getBinaryInfo, getSettings, getStatus } from "./api";
 import { AdvancedPanel } from "./components/Advanced";
@@ -81,6 +81,17 @@ function Content() {
     return () => window.clearInterval(id);
   }, [busy, refreshStatus]);
 
+  const connected = Boolean(status?.connected);
+  const wasConnected = useRef(connected);
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      // Freshly connected (incl. after SSO finishes) — refresh networks & clear SSO UI.
+      setRefreshToken((n) => n + 1);
+      setAuthUrl(null);
+    }
+    wasConnected.current = connected;
+  }, [connected]);
+
   if (view === "service") {
     return (
       <>
@@ -136,7 +147,7 @@ function Content() {
       </PanelSection>
 
       <AuthPanel
-        connected={Boolean(status?.connected)}
+        connected={connected}
         managementUrl={managementUrl}
         setupKey={setupKey}
         setSetupKey={setSetupKey}
