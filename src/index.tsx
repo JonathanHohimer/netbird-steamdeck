@@ -8,9 +8,10 @@ import { AuthPanel } from "./components/Auth";
 import { ConnectionPanel } from "./components/Connection";
 import { InstallPanel } from "./components/Install";
 import { NetworksPanel } from "./components/Networks";
+import { PeersPanel } from "./components/Peers";
 import type { BinaryInfo, StatusResult } from "./types";
 
-type View = "main" | "service" | "advanced";
+type View = "main" | "service" | "advanced" | "peers";
 
 function BackRow({ onBack }: { onBack: () => void }) {
   return (
@@ -117,9 +118,19 @@ function Content() {
           managementUrl={managementUrl}
           setManagementUrlState={setManagementUrl}
           status={status}
+          binary={binary}
           busy={busy}
           setBusy={setBusy}
         />
+      </>
+    );
+  }
+
+  if (view === "peers") {
+    return (
+      <>
+        <BackRow onBack={() => setView("main")} />
+        <PeersPanel status={status} />
       </>
     );
   }
@@ -149,20 +160,9 @@ function Content() {
         setupKey={setupKey}
         onRefresh={refreshAll}
         onAuthUrl={setAuthUrl}
+        onOpenPeers={() => setView("peers")}
         controlsDisabled={controlsDisabled}
       />
-
-      <PanelSection title="NetBird">
-        <PanelSectionRow>
-          <Field label="CLI" focusable={false}>
-            {binary == null
-              ? "Checking…"
-              : binary.found
-                ? `${binary.path}${binary.version ? ` (${binary.version})` : ""}`
-                : "Not found — use Service management"}
-          </Field>
-        </PanelSectionRow>
-      </PanelSection>
 
       <AuthPanel
         connected={connected}

@@ -47,7 +47,7 @@ NetBird.zip
     └── LICENSE
 ```
 
-Each push to `main` publishes/updates a GitHub Release tagged from `package.json` (e.g. `v1.1.13`) with that zip attached.
+Each push to `main` publishes/updates a GitHub Release tagged from `package.json` (e.g. `v1.1.14`) with that zip attached.
 
 ### Build from source
 
@@ -175,6 +175,10 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 ## AI assistance
 
 This project was created in whole or in part with the assistance of AI (Cursor). Human review and testing remain the author’s responsibility.
+
+## Disclaimer
+
+This software is provided as-is for convenience and personal use. It is shared publicly in case others find it useful, but it is offered without warranty of any kind. By choosing to install or run it, you assume all associated risk—including any impact to your Steam Deck, network, or data. The author is not liable for damages or other consequences arising from its use. Support and updates are provided on a best-effort basis and may not be available promptly.
 
 ## License
 

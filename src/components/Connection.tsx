@@ -11,10 +11,9 @@ import { useCallback, useState } from "react";
 import { fetchPublicIp, netbirdDown, netbirdUp } from "../api";
 import type { StatusResult } from "../types";
 import {
-  asPeers,
   boolish,
-  formatLatency,
   nonDefaultManagementUrl,
+  peerSummary,
 } from "./statusHelpers";
 
 type Props = {
@@ -25,6 +24,7 @@ type Props = {
   setupKey: string;
   onRefresh: () => Promise<void>;
   onAuthUrl: (url: string | null) => void;
+  onOpenPeers: () => void;
   /** When true, interactive controls are disabled (e.g. NetBird not installed). */
   controlsDisabled?: boolean;
 };
@@ -38,35 +38,6 @@ function summarize(status: StatusResult | null): string {
   return status.connected ? "Connected" : "Disconnected";
 }
 
-function peerSummary(status: StatusResult | null): string {
-  const parsed = status?.parsed;
-  if (!parsed) return "—";
-  const peers = parsed.peers;
-  if (Array.isArray(peers)) {
-    const connected = peers.filter((p) =>
-      String(p.status || p.connectionStatus || "")
-        .toLowerCase()
-        .includes("connect")
-    ).length;
-    return `${connected}/${peers.length}`;
-  }
-  if (peers && typeof peers === "object") {
-    if (typeof peers.connected === "number" && typeof peers.total === "number") {
-      return `${peers.connected}/${peers.total}`;
-    }
-    if (Array.isArray(peers.details)) {
-      const details = peers.details;
-      const connected = details.filter((p) =>
-        String(p.status || p.connectionStatus || "")
-          .toLowerCase()
-          .includes("connect")
-      ).length;
-      return `${connected}/${details.length}`;
-    }
-  }
-  return "—";
-}
-
 export function ConnectionPanel({
   status,
   busy,
@@ -75,6 +46,7 @@ export function ConnectionPanel({
   setupKey,
   onRefresh,
   onAuthUrl,
+  onOpenPeers,
   controlsDisabled = false,
 }: Props) {
   const [localBusy, setLocalBusy] = useState(false);
@@ -83,7 +55,6 @@ export function ConnectionPanel({
   const ip = status?.parsed?.netbirdIp || "—";
   const fqdn = status?.parsed?.fqdn || "—";
   const parsed = status?.parsed;
-  const peers = asPeers(status);
   const customMgmt = nonDefaultManagementUrl(status, managementUrl);
   const locked = controlsDisabled || busy || localBusy;
 
@@ -210,6 +181,11 @@ export function ConnectionPanel({
           {peerSummary(status)}
         </Field>
       </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={onOpenPeers}>
+          Peers →
+        </ButtonItem>
+      </PanelSectionRow>
       {customMgmt ? (
         <PanelSectionRow>
           <Field label="Management URL" focusable={false}>
@@ -273,35 +249,6 @@ export function ConnectionPanel({
           {parsed?.daemonVersion || "—"}
         </Field>
       </PanelSectionRow>
-      {peers.length > 0 ? (
-        <PanelSectionRow>
-          <Field label={`Peers (${peers.length})`} focusable={false}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {peers.map((peer, idx) => {
-                const name = peer.fqdn || peer.hostname || `peer-${idx}`;
-                const peerIp = peer.netbirdIp || peer.ip || "—";
-                const st = peer.status || peer.connectionStatus || "—";
-                const kind =
-                  peer.connectionType ||
-                  peer.connType ||
-                  (peer.direct ? "P2P" : "—");
-                const latency = formatLatency(peer.latency);
-                return (
-                  <div
-                    key={`${name}-${peerIp}-${idx}`}
-                    style={{ fontSize: "12px", lineHeight: "1.3" }}
-                  >
-                    <strong>{name}</strong>
-                    <br />
-                    {peerIp} · {st} · {kind}
-                    {latency ? ` · ${latency}` : ""}
-                  </div>
-                );
-              })}
-            </div>
-          </Field>
-        </PanelSectionRow>
-      ) : null}
     </PanelSection>
   );
 }

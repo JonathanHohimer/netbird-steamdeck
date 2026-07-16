@@ -12,7 +12,7 @@ import {
   networksList,
   setManagementUrl,
 } from "../api";
-import type { StatusResult } from "../types";
+import type { BinaryInfo, StatusResult } from "../types";
 import { CliRunnerPanel } from "./CliRunner";
 import { DEFAULT_MANAGEMENT_URL, formatStatusRaw } from "./statusHelpers";
 
@@ -20,6 +20,7 @@ type Props = {
   managementUrl: string;
   setManagementUrlState: (url: string) => void;
   status: StatusResult | null;
+  binary: BinaryInfo | null;
   busy: boolean;
   setBusy: (busy: boolean) => void;
 };
@@ -40,6 +41,7 @@ export function AdvancedPanel({
   managementUrl,
   setManagementUrlState,
   status,
+  binary,
   busy,
   setBusy,
 }: Props) {
@@ -200,7 +202,7 @@ export function AdvancedPanel({
         </PanelSectionRow>
       </PanelSection>
 
-      <CliRunnerPanel busy={busy} setBusy={setBusy} />
+      <CliRunnerPanel busy={busy} setBusy={setBusy} binary={binary} />
     </>
   );
 }

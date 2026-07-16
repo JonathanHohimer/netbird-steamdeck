@@ -8,13 +8,15 @@ import {
 import { toaster } from "@decky/api";
 import { useState } from "react";
 import { runCommand } from "../api";
+import type { BinaryInfo } from "../types";
 
 type Props = {
   busy: boolean;
   setBusy: (busy: boolean) => void;
+  binary?: BinaryInfo | null;
 };
 
-export function CliRunnerPanel({ busy, setBusy }: Props) {
+export function CliRunnerPanel({ busy, setBusy, binary = null }: Props) {
   const [args, setArgs] = useState("version");
   const [output, setOutput] = useState("");
 
@@ -45,8 +47,22 @@ export function CliRunnerPanel({ busy, setBusy }: Props) {
     }
   };
 
+  const cliLabel =
+    binary == null
+      ? "Checking…"
+      : binary.found
+        ? `${binary.path}${binary.version ? ` (${binary.version})` : ""}`
+        : "Not found — use Service management";
+
   return (
     <PanelSection title="CLI">
+      <PanelSectionRow>
+        <Field label="CLI" focusable={false}>
+          <div style={{ wordBreak: "break-all", fontSize: "12px" }}>
+            {cliLabel}
+          </div>
+        </Field>
+      </PanelSectionRow>
       <PanelSectionRow>
         <TextField
           label="netbird arguments"

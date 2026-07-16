@@ -11,6 +11,36 @@ export function asPeers(status: StatusResult | null): PeerState[] {
   return [];
 }
 
+/** Connected/total peer summary, e.g. "3/5", or "—" when unknown. */
+export function peerSummary(status: StatusResult | null): string {
+  const parsed = status?.parsed;
+  if (!parsed) return "—";
+  const peers = parsed.peers;
+  if (Array.isArray(peers)) {
+    const connected = peers.filter((p) =>
+      String(p.status || p.connectionStatus || "")
+        .toLowerCase()
+        .includes("connect")
+    ).length;
+    return `${connected}/${peers.length}`;
+  }
+  if (peers && typeof peers === "object") {
+    if (typeof peers.connected === "number" && typeof peers.total === "number") {
+      return `${peers.connected}/${peers.total}`;
+    }
+    if (Array.isArray(peers.details)) {
+      const details = peers.details;
+      const connected = details.filter((p) =>
+        String(p.status || p.connectionStatus || "")
+          .toLowerCase()
+          .includes("connect")
+      ).length;
+      return `${connected}/${details.length}`;
+    }
+  }
+  return "—";
+}
+
 export function formatLatency(latency: string | number | undefined): string {
   if (latency == null || latency === "") return "";
   if (typeof latency === "number") {
