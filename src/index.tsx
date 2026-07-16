@@ -1,17 +1,31 @@
-import { PanelSection, PanelSectionRow, Field, staticClasses } from "@decky/ui";
+import { PanelSection, PanelSectionRow, Field, ButtonItem, staticClasses } from "@decky/ui";
 import { definePlugin } from "@decky/api";
 import { useCallback, useEffect, useState } from "react";
 import { FaNetworkWired } from "react-icons/fa";
 import { getBinaryInfo, getSettings, getStatus } from "./api";
+import { AdvancedPanel } from "./components/Advanced";
 import { AuthPanel } from "./components/Auth";
-import { CliRunnerPanel } from "./components/CliRunner";
 import { ConnectionPanel } from "./components/Connection";
 import { InstallPanel } from "./components/Install";
 import { NetworksPanel } from "./components/Networks";
-import { StatusPanel } from "./components/Status";
 import type { BinaryInfo, StatusResult } from "./types";
 
+type View = "main" | "service" | "advanced";
+
+function BackRow({ onBack }: { onBack: () => void }) {
+  return (
+    <PanelSection>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={onBack}>
+          ← Back
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
 function Content() {
+  const [view, setView] = useState<View>("main");
   const [status, setStatus] = useState<StatusResult | null>(null);
   const [binary, setBinary] = useState<BinaryInfo | null>(null);
   const [managementUrl, setManagementUrl] = useState("");
@@ -67,28 +81,38 @@ function Content() {
     return () => window.clearInterval(id);
   }, [busy, refreshStatus]);
 
+  if (view === "service") {
+    return (
+      <>
+        <BackRow onBack={() => setView("main")} />
+        <InstallPanel
+          binary={binary}
+          setBinary={setBinary}
+          busy={busy}
+          setBusy={setBusy}
+          onRefresh={refreshAll}
+        />
+      </>
+    );
+  }
+
+  if (view === "advanced") {
+    return (
+      <>
+        <BackRow onBack={() => setView("main")} />
+        <AdvancedPanel
+          managementUrl={managementUrl}
+          setManagementUrlState={setManagementUrl}
+          status={status}
+          busy={busy}
+          setBusy={setBusy}
+        />
+      </>
+    );
+  }
+
   return (
     <>
-      <PanelSection title="NetBird">
-        <PanelSectionRow>
-          <Field label="CLI" focusable={false}>
-            {binary == null
-              ? "Checking…"
-              : binary.found
-                ? `${binary.path}${binary.version ? ` (${binary.version})` : ""}`
-                : "Not found — use Install below"}
-          </Field>
-        </PanelSectionRow>
-      </PanelSection>
-
-      <InstallPanel
-        binary={binary}
-        setBinary={setBinary}
-        busy={busy}
-        setBusy={setBusy}
-        onRefresh={refreshAll}
-      />
-
       <ConnectionPanel
         status={status}
         busy={busy}
@@ -99,9 +123,21 @@ function Content() {
         onAuthUrl={setAuthUrl}
       />
 
+      <PanelSection title="NetBird">
+        <PanelSectionRow>
+          <Field label="CLI" focusable={false}>
+            {binary == null
+              ? "Checking…"
+              : binary.found
+                ? `${binary.path}${binary.version ? ` (${binary.version})` : ""}`
+                : "Not found — use Service management"}
+          </Field>
+        </PanelSectionRow>
+      </PanelSection>
+
       <AuthPanel
+        connected={Boolean(status?.connected)}
         managementUrl={managementUrl}
-        setManagementUrlState={setManagementUrl}
         setupKey={setupKey}
         setSetupKey={setSetupKey}
         authUrl={authUrl}
@@ -117,9 +153,18 @@ function Content() {
         refreshToken={refreshToken}
       />
 
-      <StatusPanel status={status} onRefresh={refreshAll} busy={busy} />
-
-      <CliRunnerPanel busy={busy} setBusy={setBusy} />
+      <PanelSection title="More">
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setView("service")}>
+            Service management →
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setView("advanced")}>
+            Advanced →
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
     </>
   );
 }

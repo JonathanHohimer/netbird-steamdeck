@@ -23,7 +23,6 @@ type Props = {
 export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
   const [networks, setNetworks] = useState<NetworkEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [raw, setRaw] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -32,7 +31,6 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
     try {
       const result = await networksList();
       setNetworks(result.networks || []);
-      setRaw(result.stdout || result.stderr || "");
       if (!result.success && !(result.networks || []).length) {
         setError(result.stderr || result.stdout || "Failed to list networks");
       }
@@ -130,7 +128,7 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
       {networks.length === 0 && !loading ? (
         <PanelSectionRow>
           <Field label="Networks" focusable={false}>
-            No networks found (connect first, or see raw output below)
+            No networks found (connect first)
           </Field>
         </PanelSectionRow>
       ) : null}
@@ -145,24 +143,6 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
           />
         </PanelSectionRow>
       ))}
-      {raw ? (
-        <PanelSectionRow>
-          <Field label="Raw list" focusable={false}>
-            <pre
-              style={{
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                fontSize: "11px",
-                margin: 0,
-                maxHeight: "160px",
-                overflow: "auto",
-              }}
-            >
-              {raw}
-            </pre>
-          </Field>
-        </PanelSectionRow>
-      ) : null}
     </PanelSection>
   );
 }

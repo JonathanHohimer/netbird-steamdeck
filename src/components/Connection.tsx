@@ -10,6 +10,12 @@ import { toaster } from "@decky/api";
 import { useCallback, useState } from "react";
 import { fetchPublicIp, netbirdDown, netbirdUp } from "../api";
 import type { StatusResult } from "../types";
+import {
+  asPeers,
+  boolish,
+  formatLatency,
+  nonDefaultManagementUrl,
+} from "./statusHelpers";
 
 type Props = {
   status: StatusResult | null;
@@ -73,6 +79,9 @@ export function ConnectionPanel({
   const connected = Boolean(status?.connected);
   const ip = status?.parsed?.netbirdIp || "—";
   const fqdn = status?.parsed?.fqdn || "—";
+  const parsed = status?.parsed;
+  const peers = asPeers(status);
+  const customMgmt = nonDefaultManagementUrl(status, managementUrl);
 
   const setWorking = useCallback(
     (value: boolean) => {
@@ -195,6 +204,15 @@ export function ConnectionPanel({
           {peerSummary(status)}
         </Field>
       </PanelSectionRow>
+      {customMgmt ? (
+        <PanelSectionRow>
+          <Field label="Management URL" focusable={false}>
+            <div style={{ wordBreak: "break-all", fontSize: "12px" }}>
+              {customMgmt}
+            </div>
+          </Field>
+        </PanelSectionRow>
+      ) : null}
       <PanelSectionRow>
         <Field label="Public IP (ifconfig.me)" focusable={false}>
           {publicIp || "—"}
@@ -209,6 +227,75 @@ export function ConnectionPanel({
           Test public IP (curl ifconfig.me)
         </ButtonItem>
       </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          disabled={busy || localBusy}
+          onClick={() => void onRefresh()}
+        >
+          Refresh status
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Daemon" focusable={false}>
+          {status?.daemon_status ||
+            parsed?.daemonStatus ||
+            parsed?.status ||
+            "—"}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Management" focusable={false}>
+          {boolish(parsed?.management?.connected)}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Signal" focusable={false}>
+          {boolish(parsed?.signal?.connected)}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Relays" focusable={false}>
+          {parsed?.relays
+            ? `${parsed.relays.available ?? "?"}/${parsed.relays.total ?? "?"}`
+            : "—"}
+        </Field>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <Field label="Versions" focusable={false}>
+          CLI {parsed?.cliVersion || "—"} / Daemon{" "}
+          {parsed?.daemonVersion || "—"}
+        </Field>
+      </PanelSectionRow>
+      {peers.length > 0 ? (
+        <PanelSectionRow>
+          <Field label={`Peers (${peers.length})`} focusable={false}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {peers.map((peer, idx) => {
+                const name = peer.fqdn || peer.hostname || `peer-${idx}`;
+                const peerIp = peer.netbirdIp || peer.ip || "—";
+                const st = peer.status || peer.connectionStatus || "—";
+                const kind =
+                  peer.connectionType ||
+                  peer.connType ||
+                  (peer.direct ? "P2P" : "—");
+                const latency = formatLatency(peer.latency);
+                return (
+                  <div
+                    key={`${name}-${peerIp}-${idx}`}
+                    style={{ fontSize: "12px", lineHeight: "1.3" }}
+                  >
+                    <strong>{name}</strong>
+                    <br />
+                    {peerIp} · {st} · {kind}
+                    {latency ? ` · ${latency}` : ""}
+                  </div>
+                );
+              })}
+            </div>
+          </Field>
+        </PanelSectionRow>
+      ) : null}
     </PanelSection>
   );
 }

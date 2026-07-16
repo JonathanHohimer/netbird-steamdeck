@@ -31,6 +31,7 @@ function isManaged(info: BinaryInfo | null | undefined): boolean {
   return Boolean(info.path && info.path.includes("/opt/netbird"));
 }
 
+/** Service management view (install/update/service controls; log lives in Advanced). */
 export function InstallPanel({
   binary,
   setBinary,
@@ -39,7 +40,6 @@ export function InstallPanel({
   onRefresh,
 }: Props) {
   const [status, setStatus] = useState<InstallStatus | null>(null);
-  const [log, setLog] = useState("");
   const [loadingStatus, setLoadingStatus] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -48,9 +48,6 @@ export function InstallPanel({
       const info = await getInstallStatus();
       setStatus(info);
       setBinary(info);
-      if (info.last_install_log) {
-        setLog(info.last_install_log);
-      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -81,9 +78,6 @@ export function InstallPanel({
         body: "Downloading and installing… this may take a minute.",
       });
       const result = await installNetbird("");
-      setLog(
-        [result.message, result.stderr].filter(Boolean).join("\n\n") || ""
-      );
       if (result.success) {
         toaster.toast({
           title: "NetBird installed",
@@ -94,7 +88,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Install failed",
-          body: "See Install log below for the full error.",
+          body: "See Advanced → Install log for details.",
         });
       }
     });
@@ -103,9 +97,6 @@ export function InstallPanel({
     withBusy(async () => {
       toaster.toast({ title: "NetBird", body: "Updating…" });
       const result = await updateNetbird();
-      setLog(
-        [result.message, result.stderr].filter(Boolean).join("\n\n") || ""
-      );
       if (result.success) {
         toaster.toast({
           title: "NetBird updated",
@@ -114,7 +105,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Update failed",
-          body: "See Install log below for the full error.",
+          body: "See Advanced → Install log for details.",
         });
       }
     });
@@ -122,9 +113,6 @@ export function InstallPanel({
   const doUninstall = () =>
     withBusy(async () => {
       const result = await uninstallNetbird();
-      setLog(
-        [result.message, result.stderr].filter(Boolean).join("\n\n") || ""
-      );
       if (result.success) {
         toaster.toast({
           title: "NetBird",
@@ -133,7 +121,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Uninstall failed",
-          body: "See Install log below for the full error.",
+          body: "See Advanced → Install log for details.",
         });
       }
     });
@@ -145,9 +133,6 @@ export function InstallPanel({
         body: "Stopping service and wiping /var/lib/netbird…",
       });
       const result = await clearNetbirdState();
-      setLog(
-        [result.message, result.stderr].filter(Boolean).join("\n\n") || ""
-      );
       if (result.success) {
         toaster.toast({
           title: "NetBird state cleared",
@@ -156,7 +141,7 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: "Clear state failed",
-          body: "See Install log below for the full error.",
+          body: "See Advanced → Install log for details.",
         });
       }
     });
@@ -176,11 +161,8 @@ export function InstallPanel({
       } else {
         toaster.toast({
           title: `Service ${action} failed`,
-          body: "See Install log / retry Enable & start service",
+          body: "Retry Enable & start, or check Advanced → Install log",
         });
-        setLog(
-          [result.stdout, result.stderr].filter(Boolean).join("\n\n") || log
-        );
       }
     });
 
@@ -194,7 +176,7 @@ export function InstallPanel({
   );
 
   return (
-    <PanelSection title="Install (Steam Deck)">
+    <PanelSection title="Service management">
       <PanelSectionRow>
         <Field label="Plugin privileges" focusable={false}>
           {binary?.is_root || status?.is_root
@@ -278,50 +260,6 @@ export function InstallPanel({
           Refresh install status
         </ButtonItem>
       </PanelSectionRow>
-      <PanelSectionRow>
-        <Field label="Install log" focusable={true}>
-          <pre
-            style={{
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              fontSize: "11px",
-              margin: 0,
-              maxHeight: "360px",
-              overflow: "auto",
-              userSelect: "text",
-            }}
-          >
-            {log || "(no install log yet — run Install / Update to capture output)"}
-          </pre>
-        </Field>
-      </PanelSectionRow>
-      {log ? (
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            onClick={async () => {
-              try {
-                if (navigator.clipboard?.writeText) {
-                  await navigator.clipboard.writeText(log);
-                  toaster.toast({ title: "NetBird", body: "Install log copied" });
-                } else {
-                  toaster.toast({
-                    title: "NetBird",
-                    body: "Clipboard unavailable — scroll the log above",
-                  });
-                }
-              } catch {
-                toaster.toast({
-                  title: "NetBird",
-                  body: "Could not copy — scroll the log above",
-                });
-              }
-            }}
-          >
-            Copy install log
-          </ButtonItem>
-        </PanelSectionRow>
-      ) : null}
     </PanelSection>
   );
 }

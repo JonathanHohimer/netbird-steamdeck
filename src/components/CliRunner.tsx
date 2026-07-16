@@ -46,7 +46,7 @@ export function CliRunnerPanel({ busy, setBusy }: Props) {
   };
 
   return (
-    <PanelSection title="Advanced / CLI">
+    <PanelSection title="CLI">
       <PanelSectionRow>
         <TextField
           label="netbird arguments"

@@ -9,16 +9,11 @@ import {
 } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useState } from "react";
-import {
-  netbirdLogin,
-  netbirdLogout,
-  netbirdUp,
-  setManagementUrl,
-} from "../api";
+import { netbirdLogin, netbirdLogout, netbirdUp } from "../api";
 
 type Props = {
+  connected: boolean;
   managementUrl: string;
-  setManagementUrlState: (url: string) => void;
   setupKey: string;
   setSetupKey: (key: string) => void;
   authUrl: string | null;
@@ -51,8 +46,8 @@ function openSsoUrl(url: string) {
 }
 
 export function AuthPanel({
+  connected,
   managementUrl,
-  setManagementUrlState,
   setupKey,
   setSetupKey,
   authUrl,
@@ -61,25 +56,8 @@ export function AuthPanel({
   setBusy,
   onRefresh,
 }: Props) {
-  const [savingUrl, setSavingUrl] = useState(false);
   const [ssoLog, setSsoLog] = useState("");
   const [showQr, setShowQr] = useState(true);
-
-  const saveUrl = async () => {
-    setSavingUrl(true);
-    try {
-      const saved = await setManagementUrl(managementUrl.trim());
-      setManagementUrlState(saved.management_url || "");
-      toaster.toast({
-        title: "NetBird",
-        body: saved.management_url
-          ? "Management URL saved"
-          : "Using NetBird Cloud default",
-      });
-    } finally {
-      setSavingUrl(false);
-    }
-  };
 
   const withBusy = async (fn: () => Promise<void>) => {
     if (busy) return;
@@ -167,48 +145,38 @@ export function AuthPanel({
 
   return (
     <PanelSection title="Authentication">
-      <PanelSectionRow>
-        <TextField
-          label="Management URL"
-          description="Leave empty for NetBird Cloud (https://api.netbird.io:443)"
-          value={managementUrl}
-          disabled={busy || savingUrl}
-          onChange={(e) => setManagementUrlState(e.target.value)}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy || savingUrl} onClick={saveUrl}>
-          Save management URL
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <TextField
-          label="Setup key"
-          description="Used for Connect with setup key (not saved)"
-          value={setupKey}
-          disabled={busy}
-          onChange={(e) => setSetupKey(e.target.value)}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={connectWithKey}>
-          Connect with setup key
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ToggleField
-          label="Show QR for SSO"
-          description="Uses netbird --qr so another device can scan the login URL"
-          checked={showQr}
-          disabled={busy}
-          onChange={setShowQr}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={ssoLogin}>
-          SSO login
-        </ButtonItem>
-      </PanelSectionRow>
+      {!connected ? (
+        <>
+          <PanelSectionRow>
+            <TextField
+              label="Setup key"
+              description="Used for Connect with setup key (not saved)"
+              value={setupKey}
+              disabled={busy}
+              onChange={(e) => setSetupKey(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy} onClick={connectWithKey}>
+              Connect with setup key
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ToggleField
+              label="Show QR for SSO"
+              description="Uses netbird --qr so another device can scan the login URL"
+              checked={showQr}
+              disabled={busy}
+              onChange={setShowQr}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy} onClick={ssoLogin}>
+              SSO login
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      ) : null}
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy} onClick={doLogout}>
           Logout
