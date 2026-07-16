@@ -82,6 +82,8 @@ function Content() {
   }, [busy, refreshStatus]);
 
   const connected = Boolean(status?.connected);
+  const installed = Boolean(binary?.found);
+  const controlsDisabled = binary != null && !installed;
   const wasConnected = useRef(connected);
   useEffect(() => {
     if (connected && !wasConnected.current) {
@@ -124,6 +126,21 @@ function Content() {
 
   return (
     <>
+      {controlsDisabled ? (
+        <PanelSection title="NetBird isn’t installed yet">
+          <PanelSectionRow>
+            <Field label="" focusable={false}>
+              Install from Service management to connect and manage networks.
+            </Field>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => setView("service")}>
+              Open Service management →
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+      ) : null}
+
       <ConnectionPanel
         status={status}
         busy={busy}
@@ -132,6 +149,7 @@ function Content() {
         setupKey={setupKey}
         onRefresh={refreshAll}
         onAuthUrl={setAuthUrl}
+        controlsDisabled={controlsDisabled}
       />
 
       <PanelSection title="NetBird">
@@ -156,12 +174,14 @@ function Content() {
         busy={busy}
         setBusy={setBusy}
         onRefresh={refreshAll}
+        controlsDisabled={controlsDisabled}
       />
 
       <NetworksPanel
         busy={busy}
         setBusy={setBusy}
         refreshToken={refreshToken}
+        controlsDisabled={controlsDisabled}
       />
 
       <PanelSection title="More">

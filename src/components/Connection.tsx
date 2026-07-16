@@ -25,6 +25,8 @@ type Props = {
   setupKey: string;
   onRefresh: () => Promise<void>;
   onAuthUrl: (url: string | null) => void;
+  /** When true, interactive controls are disabled (e.g. NetBird not installed). */
+  controlsDisabled?: boolean;
 };
 
 function summarize(status: StatusResult | null): string {
@@ -73,6 +75,7 @@ export function ConnectionPanel({
   setupKey,
   onRefresh,
   onAuthUrl,
+  controlsDisabled = false,
 }: Props) {
   const [localBusy, setLocalBusy] = useState(false);
   const [publicIp, setPublicIp] = useState<string | null>(null);
@@ -82,6 +85,7 @@ export function ConnectionPanel({
   const parsed = status?.parsed;
   const peers = asPeers(status);
   const customMgmt = nonDefaultManagementUrl(status, managementUrl);
+  const locked = controlsDisabled || busy || localBusy;
 
   const setWorking = useCallback(
     (value: boolean) => {
@@ -92,7 +96,7 @@ export function ConnectionPanel({
   );
 
   const onToggle = async (wantUp: boolean) => {
-    if (busy || localBusy) return;
+    if (controlsDisabled || busy || localBusy) return;
     setWorking(true);
     try {
       if (wantUp) {
@@ -146,7 +150,7 @@ export function ConnectionPanel({
   };
 
   const checkPublicIp = async () => {
-    if (busy || localBusy) return;
+    if (controlsDisabled || busy || localBusy) return;
     setWorking(true);
     try {
       const result = await fetchPublicIp();
@@ -180,12 +184,14 @@ export function ConnectionPanel({
         <ToggleField
           label="Connected"
           description={
-            busy || localBusy
-              ? "Working…"
-              : `Daemon: ${summarize(status)}`
+            controlsDisabled
+              ? "Install NetBird first"
+              : busy || localBusy
+                ? "Working…"
+                : `Daemon: ${summarize(status)}`
           }
           checked={connected}
-          disabled={busy || localBusy}
+          disabled={locked}
           onChange={onToggle}
         />
       </PanelSectionRow>
@@ -221,7 +227,7 @@ export function ConnectionPanel({
       <PanelSectionRow>
         <ButtonItem
           layout="below"
-          disabled={busy || localBusy}
+          disabled={locked}
           onClick={() => void checkPublicIp()}
         >
           Test public IP (curl ifconfig.me)
@@ -230,7 +236,7 @@ export function ConnectionPanel({
       <PanelSectionRow>
         <ButtonItem
           layout="below"
-          disabled={busy || localBusy}
+          disabled={locked}
           onClick={() => void onRefresh()}
         >
           Refresh status

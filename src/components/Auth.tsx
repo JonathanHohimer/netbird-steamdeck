@@ -21,6 +21,7 @@ type Props = {
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onRefresh: () => Promise<void>;
+  controlsDisabled?: boolean;
 };
 
 async function copyText(text: string): Promise<boolean> {
@@ -55,9 +56,11 @@ export function AuthPanel({
   busy,
   setBusy,
   onRefresh,
+  controlsDisabled = false,
 }: Props) {
   const [ssoLog, setSsoLog] = useState("");
   const [showQr, setShowQr] = useState(true);
+  const locked = controlsDisabled || busy;
 
   useEffect(() => {
     if (connected) {
@@ -67,7 +70,7 @@ export function AuthPanel({
   }, [connected, setAuthUrl]);
 
   const withBusy = async (fn: () => Promise<void>) => {
-    if (busy) return;
+    if (controlsDisabled || busy) return;
     setBusy(true);
     try {
       await fn();
@@ -159,12 +162,12 @@ export function AuthPanel({
               label="Setup key"
               description="Used for Connect with setup key (not saved)"
               value={setupKey}
-              disabled={busy}
+              disabled={locked}
               onChange={(e) => setSetupKey(e.target.value)}
             />
           </PanelSectionRow>
           <PanelSectionRow>
-            <ButtonItem layout="below" disabled={busy} onClick={connectWithKey}>
+            <ButtonItem layout="below" disabled={locked} onClick={connectWithKey}>
               Connect with setup key
             </ButtonItem>
           </PanelSectionRow>
@@ -173,19 +176,19 @@ export function AuthPanel({
               label="Show QR for SSO"
               description="Uses netbird --qr so another device can scan the login URL"
               checked={showQr}
-              disabled={busy}
+              disabled={locked}
               onChange={setShowQr}
             />
           </PanelSectionRow>
           <PanelSectionRow>
-            <ButtonItem layout="below" disabled={busy} onClick={ssoLogin}>
+            <ButtonItem layout="below" disabled={locked} onClick={ssoLogin}>
               SSO login
             </ButtonItem>
           </PanelSectionRow>
         </>
       ) : null}
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={doLogout}>
+        <ButtonItem layout="below" disabled={locked} onClick={doLogout}>
           Logout
         </ButtonItem>
       </PanelSectionRow>
@@ -208,6 +211,7 @@ export function AuthPanel({
           <PanelSectionRow>
             <ButtonItem
               layout="below"
+              disabled={locked}
               onClick={() => {
                 const ok = openSsoUrl(authUrl);
                 toaster.toast({
@@ -222,6 +226,7 @@ export function AuthPanel({
           <PanelSectionRow>
             <ButtonItem
               layout="below"
+              disabled={locked}
               onClick={async () => {
                 const ok = await copyText(authUrl);
                 toaster.toast({

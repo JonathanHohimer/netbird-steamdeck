@@ -18,12 +18,19 @@ type Props = {
   busy: boolean;
   setBusy: (busy: boolean) => void;
   refreshToken: number;
+  controlsDisabled?: boolean;
 };
 
-export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
+export function NetworksPanel({
+  busy,
+  setBusy,
+  refreshToken,
+  controlsDisabled = false,
+}: Props) {
   const [networks, setNetworks] = useState<NetworkEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const locked = controlsDisabled || busy || loading;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -42,11 +49,12 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
   }, []);
 
   useEffect(() => {
+    if (controlsDisabled) return;
     void refresh();
-  }, [refresh, refreshToken]);
+  }, [refresh, refreshToken, controlsDisabled]);
 
   const withBusy = async (fn: () => Promise<void>) => {
-    if (busy) return;
+    if (controlsDisabled || busy) return;
     setBusy(true);
     try {
       await fn();
@@ -104,17 +112,17 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
   return (
     <PanelSection title="Networks">
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy || loading} onClick={() => void refresh()}>
+        <ButtonItem layout="below" disabled={locked} onClick={() => void refresh()}>
           {loading ? "Refreshing…" : "Refresh networks"}
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy || loading} onClick={selectAll}>
+        <ButtonItem layout="below" disabled={locked} onClick={selectAll}>
           Select all
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy || loading} onClick={deselectAll}>
+        <ButtonItem layout="below" disabled={locked} onClick={deselectAll}>
           Deselect all
         </ButtonItem>
       </PanelSectionRow>
@@ -128,7 +136,9 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
       {networks.length === 0 && !loading ? (
         <PanelSectionRow>
           <Field label="Networks" focusable={false}>
-            No networks found (connect first)
+            {controlsDisabled
+              ? "Install NetBird first"
+              : "No networks found (connect first)"}
           </Field>
         </PanelSectionRow>
       ) : null}
@@ -138,7 +148,7 @@ export function NetworksPanel({ busy, setBusy, refreshToken }: Props) {
             label={net.id}
             description={net.description || net.raw || ""}
             checked={net.selected}
-            disabled={busy || loading}
+            disabled={locked}
             onChange={(value) => void toggleNetwork(net, value)}
           />
         </PanelSectionRow>
