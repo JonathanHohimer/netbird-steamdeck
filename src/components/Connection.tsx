@@ -15,6 +15,7 @@ import {
   nonDefaultManagementUrl,
   peerSummary,
 } from "./statusHelpers";
+import { FittingText } from "./FittingText";
 
 type Props = {
   status: StatusResult | null;
@@ -168,12 +169,12 @@ export function ConnectionPanel({
       </PanelSectionRow>
       <PanelSectionRow>
         <Field label="NetBird IP" focusable={false}>
-          {ip}
+          <FittingText>{ip}</FittingText>
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
         <Field label="FQDN" focusable={false}>
-          {fqdn}
+          <FittingText>{fqdn}</FittingText>
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
@@ -189,9 +190,9 @@ export function ConnectionPanel({
       {customMgmt ? (
         <PanelSectionRow>
           <Field label="Management URL" focusable={false}>
-            <div style={{ wordBreak: "break-all", fontSize: "12px" }}>
+            <FittingText maxPx={12} minPx={10}>
               {customMgmt}
-            </div>
+            </FittingText>
           </Field>
         </PanelSectionRow>
       ) : null}
