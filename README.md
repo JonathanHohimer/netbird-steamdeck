@@ -21,6 +21,23 @@ SteamOS is immutable, so the usual NetBird Linux installer often fails or does n
 
 For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 
+# Screenshots
+
+## Main Screen
+
+<img width="519" height="675" alt="decky1" src="https://github.com/user-attachments/assets/04a77046-1ae2-465a-9d02-65e82f47bc0c" />
+
+<img width="522" height="681" alt="decky2" src="https://github.com/user-attachments/assets/6829e1b8-6bba-44d5-9cd2-c90adb52ea20" />
+
+## Service Management
+<img width="515" height="675" alt="decky3" src="https://github.com/user-attachments/assets/ab414216-c972-45c0-8a22-fa4460088b44" />
+
+<img width="516" height="680" alt="decky4" src="https://github.com/user-attachments/assets/edf85fb7-94d8-485f-8aec-9a2cb1ceb5d2" />
+
+## Advanced
+<img width="511" height="689" alt="decky5" src="https://github.com/user-attachments/assets/53b74733-c728-4133-842e-a7eadfaa4262" />
+
+
 ## Features
 
 - **Install / update / uninstall** NetBird under `/opt/netbird`
