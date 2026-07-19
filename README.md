@@ -1,5 +1,20 @@
 # NetBird for Steam Deck (Decky Plugin)
 
+## Disclaimer
+
+This software is provided as-is for convenience and personal use. It is shared publicly in case others find it useful, but it is offered without warranty of any kind. By choosing to install or run it, you assume all associated risk—including any impact to your Steam Deck, network, or data. The author is not liable for damages or other consequences arising from its use. Support and updates are provided on a best-effort basis and may not be available promptly.
+
+## Security notes
+
+- The backend runs as root so it can manage `/opt` and systemd
+- Setup keys are passed as CLI args and not written to plugin settings; they are redacted from plugin logs
+- The Advanced CLI runner rejects shell metacharacters and never invokes a shell
+
+## AI assistance
+
+This project was created in whole or in part with the assistance of AI (Cursor). Human review and testing remain the author’s responsibility.
+
+
 Decky Loader plugin that installs and controls [NetBird](https://netbird.io/) from Steam Deck **Gaming Mode**.
 
 SteamOS is immutable, so the usual NetBird Linux installer often fails or does not persist across updates. This plugin uses the Deck-friendly layout discussed in [NetBird #4584](https://github.com/netbirdio/netbird/issues/4584): binary under `/opt/netbird`, systemd service registration, and `/etc` keep-files so PATH helpers survive SteamOS updates.
@@ -165,20 +180,6 @@ Reload the plugin in Decky after copying an updated build (or reinstall the zip)
 | Service inactive after reboot | **Start service**, or reinstall so `systemctl enable` runs again |
 | Status empty | Service must be running; use **Start service** then refresh |
 | Stuck / wrong peer identity after reinstall | Service management → clear `/var/lib/netbird`, then re-authenticate |
-
-## Security notes
-
-- The backend runs as root so it can manage `/opt` and systemd
-- Setup keys are passed as CLI args and not written to plugin settings; they are redacted from plugin logs
-- The Advanced CLI runner rejects shell metacharacters and never invokes a shell
-
-## AI assistance
-
-This project was created in whole or in part with the assistance of AI (Cursor). Human review and testing remain the author’s responsibility.
-
-## Disclaimer
-
-This software is provided as-is for convenience and personal use. It is shared publicly in case others find it useful, but it is offered without warranty of any kind. By choosing to install or run it, you assume all associated risk—including any impact to your Steam Deck, network, or data. The author is not liable for damages or other consequences arising from its use. Support and updates are provided on a best-effort basis and may not be available promptly.
 
 ## License
 
