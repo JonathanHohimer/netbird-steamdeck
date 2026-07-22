@@ -17,6 +17,7 @@ export type BinaryInfo = {
   daemon_socket?: boolean;
   daemon_reachable?: boolean;
   opt_path?: string;
+  install_root?: string;
   is_root?: boolean;
   uid?: number;
 };

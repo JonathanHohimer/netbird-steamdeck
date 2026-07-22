@@ -30,8 +30,23 @@ try:
 except ImportError:  # pragma: no cover
     aiohttp = None  # type: ignore
 
-# Steam Deck–friendly install location (survives OS updates with /home)
-OPT_ROOT = Path("/opt/netbird")
+# Steam Deck–friendly install location. Some immutable distributions expose
+# /opt through a read-only root filesystem, so use persistent /var/opt there.
+DEFAULT_INSTALL_ROOT = Path("/opt/netbird")
+FALLBACK_INSTALL_ROOT = Path("/var/opt/netbird")
+MANAGED_INSTALL_ROOTS = (DEFAULT_INSTALL_ROOT, FALLBACK_INSTALL_ROOT)
+
+
+def _select_install_root() -> Path:
+    try:
+        if os.statvfs("/opt").f_flag & os.ST_RDONLY:
+            return FALLBACK_INSTALL_ROOT
+    except OSError:
+        pass
+    return DEFAULT_INSTALL_ROOT
+
+
+OPT_ROOT = _select_install_root()
 OPT_BIN_DIR = OPT_ROOT / "bin"
 OPT_BIN = OPT_BIN_DIR / "netbird"
 OPT_TMP = OPT_ROOT / "tmp"
@@ -56,9 +71,10 @@ USER_AGENT = "netbird-steamdeck-decky-plugin/1.1"
 
 BINARY_CANDIDATES = [
     str(OPT_BIN),
+    *(str(root / "bin/netbird") for root in MANAGED_INSTALL_ROOTS),
     "/usr/bin/netbird",
     "/usr/local/bin/netbird",
-    "/opt/netbird/netbird",
+    *(str(root / "netbird") for root in MANAGED_INSTALL_ROOTS),
     "/home/deck/.local/bin/netbird",
     "/home/linuxbrew/.linuxbrew/bin/netbird",
 ]
@@ -116,6 +132,13 @@ def _resolve_binary() -> Optional[str]:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def _is_managed_binary(binary: Optional[str]) -> bool:
+    if not binary:
+        return False
+    path = Path(binary).resolve(strict=False)
+    return any(root == path or root in path.parents for root in MANAGED_INSTALL_ROOTS)
 
 
 def _linux_arch() -> str:
@@ -209,28 +232,32 @@ def _normalize_version(version: str) -> str:
     return cleaned
 
 
-def _write_steamos_persist_files() -> None:
+def _write_steamos_persist_files() -> list[Path]:
+    written: list[Path] = []
     PROFILE_D.parent.mkdir(parents=True, exist_ok=True)
     PROFILE_D.write_text(
         "# Managed by NetBird Decky plugin\n"
-        "append_path /opt/netbird/bin\n",
+        f"append_path {OPT_BIN_DIR}\n",
         encoding="utf-8",
     )
+    written.append(PROFILE_D)
     try:
         PROFILE_D.chmod(0o644)
     except OSError:
         pass
 
-    ATOMIC_UPDATE.parent.mkdir(parents=True, exist_ok=True)
-    ATOMIC_UPDATE.write_text(
-        "# Managed by NetBird Decky plugin — keep across SteamOS updates\n"
-        "/etc/profile.d/netbird.sh\n",
-        encoding="utf-8",
-    )
-    try:
-        ATOMIC_UPDATE.chmod(0o644)
-    except OSError:
-        pass
+    if ATOMIC_UPDATE.parent.is_dir():
+        ATOMIC_UPDATE.write_text(
+            "# Managed by NetBird Decky plugin — keep across SteamOS updates\n"
+            "/etc/profile.d/netbird.sh\n",
+            encoding="utf-8",
+        )
+        written.append(ATOMIC_UPDATE)
+        try:
+            ATOMIC_UPDATE.chmod(0o644)
+        except OSError:
+            pass
+    return written
 
 
 def _clean_subprocess_env() -> dict[str, str]:
@@ -560,7 +587,7 @@ class Plugin:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": "netbird binary not found. Use Install in the plugin to install NetBird under /opt/netbird.",
+                "stderr": f"netbird binary not found. Use Install in the plugin to install NetBird under {OPT_ROOT}.",
                 "code": -1,
                 "auth_url": None,
             }
@@ -950,7 +977,7 @@ class Plugin:
 
     async def get_binary_info(self) -> dict[str, Any]:
         binary = _resolve_binary()
-        managed = OPT_BIN.is_file()
+        managed = _is_managed_binary(binary)
         is_root = os.geteuid() == 0
         unit_present = SYSTEMD_UNIT.is_file()
         service_active = await _systemctl_is_active("netbird.service")
@@ -987,6 +1014,7 @@ class Plugin:
                 "daemon_socket": daemon_socket,
                 "daemon_reachable": daemon_reachable,
                 "opt_path": str(OPT_BIN),
+                "install_root": str(OPT_ROOT),
                 "is_root": is_root,
                 "uid": os.geteuid(),
             }
@@ -1003,6 +1031,7 @@ class Plugin:
             "daemon_socket": daemon_socket,
             "daemon_reachable": daemon_reachable,
             "opt_path": str(OPT_BIN),
+            "install_root": str(OPT_ROOT),
             "is_root": is_root,
             "uid": os.geteuid(),
         }
@@ -1028,7 +1057,7 @@ class Plugin:
         }
 
     async def install_netbird(self, version: str = "") -> dict[str, Any]:
-        """Install or update NetBird under /opt/netbird for SteamOS persistence."""
+        """Install or update NetBird under a persistent managed root."""
         logs: list[str] = []
 
         def _finish(**kwargs: Any) -> dict[str, Any]:
@@ -1047,7 +1076,7 @@ class Plugin:
                     path=None,
                     message="\n".join(logs),
                     stderr=(
-                        "Permission denied writing /opt/netbird: plugin is not running as root "
+                        f"Permission denied writing {OPT_ROOT}: plugin is not running as root "
                         f"(uid={os.geteuid()}). Reinstall the plugin zip so plugin.json has "
                         '"flags": ["root"], then restart Decky / PluginLoader.'
                     ),
@@ -1118,8 +1147,8 @@ class Plugin:
             binary_path = await asyncio.to_thread(_extract)
             logs.append(f"Installed binary to {binary_path}")
 
-            _write_steamos_persist_files()
-            logs.append(f"Wrote {PROFILE_D} and {ATOMIC_UPDATE}")
+            persist_files = _write_steamos_persist_files()
+            logs.append("Wrote " + " and ".join(str(path) for path in persist_files))
 
             # Stop existing service before reinstalling unit (best effort)
             await _run_system(
@@ -1356,12 +1385,16 @@ class Plugin:
                     except OSError as exc:
                         logs.append(f"Could not remove {path}: {exc}")
 
-            if OPT_ROOT.exists():
-                shutil.rmtree(OPT_ROOT, ignore_errors=True)
-                logs.append(f"Removed {OPT_ROOT}")
+            for root in MANAGED_INSTALL_ROOTS:
+                if root.exists():
+                    shutil.rmtree(root, ignore_errors=True)
+                    logs.append(f"Removed {root}")
 
             return {
-                "success": not OPT_BIN.is_file(),
+                "success": not any(
+                    (root / "bin/netbird").is_file()
+                    for root in MANAGED_INSTALL_ROOTS
+                ),
                 "message": "\n".join(logs) or "Uninstalled",
                 "stderr": "",
             }

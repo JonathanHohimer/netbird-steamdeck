@@ -15,9 +15,9 @@ This software is provided as-is for convenience and personal use. It is shared p
 This project was created in whole or in part with the assistance of AI (Cursor). Human review and testing remain the author’s responsibility.
 
 
-Decky Loader plugin that installs and controls [NetBird](https://netbird.io/) from Steam Deck **Gaming Mode**.
+Decky Loader plugin that installs and controls [NetBird](https://netbird.io/) from **Gaming Mode** on Steam Deck and compatible immutable Linux handhelds.
 
-SteamOS is immutable, so the usual NetBird Linux installer often fails or does not persist across updates. This plugin uses the Deck-friendly layout discussed in [NetBird #4584](https://github.com/netbirdio/netbird/issues/4584): binary under `/opt/netbird`, systemd service registration, and `/etc` keep-files so PATH helpers survive SteamOS updates.
+SteamOS and similar gaming distributions are immutable, so the usual NetBird Linux installer often fails or does not persist across updates. This plugin uses the Deck-friendly layout discussed in [NetBird #4584](https://github.com/netbirdio/netbird/issues/4584): binary under `/opt/netbird` when `/opt` is writable, `/var/opt/netbird` otherwise, systemd service registration, and SteamOS keep-files when available.
 
 For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 
@@ -40,7 +40,7 @@ For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 
 ## Features
 
-- **Install / update / uninstall** NetBird under `/opt/netbird`
+- **Install / update / uninstall** NetBird under `/opt/netbird` or `/var/opt/netbird`
 - Start / stop / enable the NetBird systemd service
 - Connect / disconnect (`netbird up` / `netbird down`)
 - Setup-key login and SSO login (SSO uses `--no-browser` / `--qr`, copyable URL, optional QR)
@@ -53,8 +53,8 @@ For a file-by-file map of the repo, see [STRUCTURE.md](STRUCTURE.md).
 
 ## Prerequisites
 
-1. Steam Deck with [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) installed
-2. This plugin installed (ships with the `root` flag so it can write `/opt` and manage the service)
+1. A Steam Deck or compatible x86_64/aarch64 Linux handheld with [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) installed
+2. This plugin installed (ships with the `root` flag so it can manage the install and service)
 
 You do **not** need a separate NetBird install first.
 
@@ -116,7 +116,7 @@ CI builds this zip on push/tags via [`.github/workflows/build.yml`](.github/work
 1. Open Decky → **NetBird**
 2. If you see **NetBird isn’t installed yet**, tap **Open Service management →** (or **More → Service management →**)
 3. **Install NetBird**  
-   Downloads the latest GitHub `linux_amd64` release into `/opt/netbird`, installs the service, and enables it on boot
+   Downloads the latest matching GitHub release (`linux_amd64` or `linux_arm64`) into the selected managed path, installs the service, and enables it on boot
 4. Go **← Back** to the main view
 5. Authenticate:
    - **Setup key:** paste key → **Connect with setup key**, or
@@ -142,13 +142,14 @@ Service management and Advanced are sub-views with **← Back** to main. They st
 
 | Path | Role |
 |---|---|
-| `/opt/netbird/bin/netbird` | Client binary (persists with `/home`) |
-| `/etc/profile.d/netbird.sh` | Adds `/opt/netbird/bin` to PATH |
-| `/etc/atomic-update.conf.d/netbird.conf` | Keeps the profile snippet across SteamOS updates |
+| `/opt/netbird/bin/netbird` | Client binary when `/opt` is writable |
+| `/var/opt/netbird/bin/netbird` | Client binary fallback when `/opt` is read-only |
+| `/etc/profile.d/netbird.sh` | Adds the selected binary directory to PATH |
+| `/etc/atomic-update.conf.d/netbird.conf` | Keeps the profile snippet across SteamOS updates; only written when this mechanism exists |
 | `/etc/systemd/system/netbird.service` | Daemon unit from `netbird service install` |
 | `/var/lib/netbird` | NetBird runtime state (keys, config) |
 
-**Uninstall managed NetBird** removes the `/opt/netbird` tree, profile/atomic keep files, and the systemd unit. External installs (Homebrew, Distrobox, etc.) are left alone unless they live under `/opt/netbird`.
+**Uninstall managed NetBird** removes the managed `/opt/netbird` and `/var/opt/netbird` trees, profile/atomic keep files, and the systemd unit. External installs (Homebrew, Distrobox, etc.) are left alone.
 
 Setup keys are **not** persisted. The management URL is stored in Decky’s plugin settings directory.
 
@@ -162,11 +163,11 @@ Setup keys are **not** persisted. The management URL is stored in Decky’s plug
                                                      │
                                       ┌──────────────┼──────────────┐
                                       ▼              ▼              ▼
-                               /opt/netbird     GitHub releases   systemctl
+                          /opt or /var/opt/netbird  GitHub releases  systemctl
                                netbird CLI
 ```
 
-Frontend talks to the backend with `@decky/api` `callable()`. The backend resolves `/opt/netbird/bin/netbird` first, then falls back to PATH / other known locations.
+Frontend talks to the backend with `@decky/api` `callable()`. The backend prefers the selected managed install root, then falls back to the other managed root, PATH, and other known locations.
 
 ## Development
 

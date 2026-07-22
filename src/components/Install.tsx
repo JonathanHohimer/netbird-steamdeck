@@ -28,7 +28,11 @@ type Props = {
 function isManaged(info: BinaryInfo | null | undefined): boolean {
   if (!info) return false;
   if (info.managed) return true;
-  return Boolean(info.path && info.path.includes("/opt/netbird"));
+  return Boolean(
+    info.path &&
+      (info.path.includes("/opt/netbird") ||
+        info.path.includes("/var/opt/netbird"))
+  );
 }
 
 /** Service management view (install/update/service controls; log lives in Advanced). */
@@ -81,9 +85,9 @@ export function InstallPanel({
       if (result.success) {
         toaster.toast({
           title: "NetBird installed",
-          body: result.version
-            ? `v${result.version} at /opt/netbird`
-            : "Installed under /opt/netbird",
+          body: result.path
+            ? `${result.version ? `v${result.version} at ` : "Installed at "}${result.path}`
+            : "Install complete",
         });
       } else {
         toaster.toast({
@@ -112,11 +116,12 @@ export function InstallPanel({
 
   const doUninstall = () =>
     withBusy(async () => {
+      const installRoot = binary?.install_root || status?.install_root;
       const result = await uninstallNetbird();
       if (result.success) {
         toaster.toast({
           title: "NetBird",
-          body: "Uninstalled from /opt/netbird",
+          body: installRoot ? `Uninstalled from ${installRoot}` : "Uninstalled",
         });
       } else {
         toaster.toast({
@@ -174,20 +179,21 @@ export function InstallPanel({
   const enabledOnBoot = Boolean(
     binary?.service_enabled || status?.service_enabled
   );
+  const installRoot = binary?.install_root || status?.install_root;
 
   return (
     <PanelSection title="Service management">
       <PanelSectionRow>
         <Field label="Plugin privileges" focusable={false}>
           {binary?.is_root || status?.is_root
-            ? "root (can install to /opt)"
+            ? "root (can manage the NetBird service)"
             : `NOT root (uid ${binary?.uid ?? status?.uid ?? "?"}) — reinstall zip with flags: ["root"]`}
         </Field>
       </PanelSectionRow>
       <PanelSectionRow>
         <Field label="Managed install" focusable={false}>
           {managed
-            ? "Yes (/opt/netbird)"
+            ? `Yes (${installRoot || binary?.path || status?.path || "managed path"})`
             : installed
               ? "External install detected"
               : "Not installed"}
