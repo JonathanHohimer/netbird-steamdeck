@@ -3,7 +3,7 @@
 This repository is a [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin. It has two runtime halves that ship together:
 
 1. **Frontend** — React/TypeScript UI injected into Steam Gaming Mode (`src/` → `dist/index.js`)
-2. **Backend** — Python process started by Decky (`main.py`) that shells out to NetBird and manages the Steam Deck install under `/opt/netbird`
+2. **Backend** — Python process started by Decky (`main.py`) that shells out to NetBird and manages the install under `/opt/netbird` or `/var/opt/netbird`
 
 ```text
 netbird-steamdeck/
@@ -118,27 +118,27 @@ Decky instantiates `Plugin` and exposes its `async` methods to the frontend.
 
 Order of preference:
 
-1. `/opt/netbird/bin/netbird` (managed install)
+1. Selected managed path: `/opt/netbird/bin/netbird`, or `/var/opt/netbird/bin/netbird` when `/opt` is read-only
 2. `PATH` via `shutil.which("netbird")`
 3. Fallbacks: `/usr/bin`, `/usr/local/bin`, Homebrew path, etc.
 
-### Install management (Steam Deck)
+### Install management (immutable Linux)
 
 | Method | Behavior |
 |---|---|
 | `get_install_status` | Local version, managed flag, service active/enabled, latest GitHub tag |
-| `install_netbird` | Download release tarball → `/opt/netbird/bin`, write persist files, `service install` + `enable` + `start` |
+| `install_netbird` | Download release tarball → selected managed root, write applicable persist files, `service install` + `enable` + `start` |
 | `update_netbird` | Same as install with latest version |
-| `uninstall_netbird` | `down` / `service uninstall`, remove `/opt/netbird` + profile/atomic files + unit |
+| `uninstall_netbird` | `down` / `service uninstall`, remove managed roots + profile/atomic files + unit |
 | `clear_netbird_state` | Stop service and clear `/var/lib/netbird` (re-auth required) |
 | `service_start` / `service_stop` / `service_enable` | Prefer `netbird service …`, fall back to `systemctl` |
 | `fetch_public_ip` | `curl ifconfig.me` (egress check) |
 
 Managed host files written by install:
 
-- `/opt/netbird/bin/netbird`
+- `/opt/netbird/bin/netbird` or `/var/opt/netbird/bin/netbird`
 - `/etc/profile.d/netbird.sh`
-- `/etc/atomic-update.conf.d/netbird.conf`
+- `/etc/atomic-update.conf.d/netbird.conf` (only when the directory already exists)
 - `/etc/systemd/system/netbird.service` (via NetBird’s own installer)
 
 ### CLI control
@@ -200,7 +200,7 @@ User taps Install
     → Install.tsx calls installNetbird()
     → Decky RPC → main.py install_netbird()
     → GitHub Releases download
-    → write /opt/netbird + persist files
+    → write selected managed root + applicable persist files
     → netbird service install/enable/start
     → frontend refreshes get_binary_info / get_install_status / status
 
@@ -219,4 +219,4 @@ User toggles Connected
 2. **New UI section** — add a component under `src/components/` and mount it from `src/index.tsx` (main view or a sub-view).
 3. **Rebuild** — `pnpm run build`, then reinstall/reload the plugin zip on the Deck.
 
-Keep CLI invocations as argv lists (never `shell=True`). Prefer `/opt/netbird/bin/netbird` for Deck-managed installs.
+Keep CLI invocations as argv lists (never `shell=True`). Prefer the selected managed install path.
